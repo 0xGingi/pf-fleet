@@ -31,7 +31,7 @@ pub fn install(exe: &Path, meta: &Update, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("writing {} (is the directory writable?)", tmp.display()))?;
 
     // never swap in something that cannot start on this machine
-    let out = std::process::Command::new(&tmp).arg("version").output();
+    let out = run_version(&tmp);
     let expected = format!("pf-fleet-agent {}", meta.version);
     match out {
         Ok(o) if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == expected => {}
@@ -49,6 +49,20 @@ pub fn install(exe: &Path, meta: &Update, bytes: &[u8]) -> Result<()> {
     }
     std::fs::rename(&tmp, exe).with_context(|| format!("replacing {}", exe.display()))?;
     Ok(())
+}
+
+/// `<path> version`, retrying ETXTBSY: if any thread forks while the file is still open for
+/// writing, the child holds that fd until it execs, and Linux refuses to run the file meanwhile.
+fn run_version(path: &Path) -> std::io::Result<std::process::Output> {
+    for _ in 0..20 {
+        match std::process::Command::new(path).arg("version").output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+    std::process::Command::new(path).arg("version").output()
 }
 
 fn write_executable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
