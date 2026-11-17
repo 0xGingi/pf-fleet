@@ -12,11 +12,10 @@ Navigation moved to a top bar, the numbers are bigger and easier to read, and th
 overview puts recent jobs full width so no column gets cut off. It also works better
 on a phone. Light mode follows your system setting.
 
-**Stuck leases clear faster.** Sometimes Pirate Face refuses a finished model as
-"already been submitted" but keeps holding the lane's lease. The agent used to ask
-again every minute, which seemed to keep the lease alive for half an hour or more.
-Now it waits the 10 minutes out in one go, and you get one event per wait instead
-of one a minute.
+**Quieter lease waits.** Sometimes Pirate Face refuses a finished model as "already
+been submitted" but keeps holding the lane's lease for 10 minutes. The agent used to
+ask again every minute, logging an event each time. Now it waits the 10 minutes out
+in one go, and you get one event per wait.
 
 **Heads-up when a lane is going in circles.** Pirate Face sometimes hands a lane the
 same model it just refused as "already submitted". The node's event log now warns

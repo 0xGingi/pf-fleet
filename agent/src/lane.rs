@@ -338,8 +338,8 @@ impl Lane {
             .is_some_and(|m| m.contains("already hold lease"))
         {
             // Pirate Face still holds a lease for this lane (the agent restarted mid-job, or it
-            // kept the lease of a refused job). Wait it out in one go, with no exponential backoff:
-            // checking every minute kept such a lease held for 30+ minutes.
+            // kept the lease of a refused job). It lapses on its own; wait it out in one go, with
+            // no exponential backoff and no point asking every minute.
             self.lease_free_ms = Some(now_ms + LEASE_LAPSE_MS);
             self.next_start = None;
             self.state = LaneState::Backoff;
