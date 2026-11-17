@@ -1,0 +1,15 @@
+services:
+  dashboard:
+    # releases: docker compose pull && docker compose up -d
+    # local build instead: docker compose up -d --build
+    image: ghcr.io/0xgingi/pf-fleet:${PF_FLEET_TAG:-latest}
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PF_FLEET_PORT:-1337}:1337"
+    volumes:
+      - pf-fleet-data:/data
+
+volumes:
+  pf-fleet-data:

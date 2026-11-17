@@ -1,0 +1,8 @@
+node_modules/
+dist/
+agent/target/
+.env
+*.db
+*.db-*
+data/
+apps/server/agent-dist/

@@ -1,0 +1,1 @@
+{"type":"log","lane":"hermes-1","lines":[{"ts":1794864100000,"stream":"out","text":"    leased    orcarouter/Qwen3.8-27B-MLX"},{"ts":1794864160000,"stream":"err","text":"    1.1 of 88.7 GB"},{"ts":1794864160001,"stream":"agent","text":"started worker (pid 4242)"}]}

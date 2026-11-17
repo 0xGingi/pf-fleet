@@ -1,0 +1,11 @@
+{
+  "name": "pf-fleet",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter '@pf-fleet/server' dev & bun run --filter '@pf-fleet/web' dev",
+    "build": "bun run --filter '@pf-fleet/web' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test packages apps/server"
+  }
+}

@@ -1,0 +1,1 @@
+{"type":"config","lanes":[{"name":"hermes-1","enabled":true,"drain":false},{"name":"hermes-2","enabled":false,"drain":true}],"maxSizeGiB":0,"idleSec":300,"pirateKey":"pfct_0123456789abcdef0123456789abcdef"}

@@ -1,0 +1,100 @@
+name: Release
+
+# Bump `version` in agent/Cargo.toml, commit, then push a matching tag: git tag v0.2.0 && git push --tags
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tag matches agent/Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml | head -1)"
+          if [ "$tag" != "$cargo" ]; then
+            echo "::error::tag v$tag does not match agent/Cargo.toml version $cargo"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+    # ci.yml's edge-image job (skipped for tags) declares packages: write, so the call must allow it
+    permissions:
+      contents: read
+      packages: write
+
+  agent-binaries:
+    name: Agent binaries
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.4.1
+      - name: Build static agents (x86_64, aarch64)
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          target: agent-binaries
+          build-args: VERSION=${{ needs.check.outputs.version }}
+          outputs: type=local,dest=dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum pf-fleet-agent-* > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v3.0.4
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.check.outputs.version, '-') }}
+          files: |
+            dist/pf-fleet-agent-x86_64
+            dist/pf-fleet-agent-aarch64
+            dist/SHA256SUMS
+
+  image:
+    name: Dashboard image
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-qemu-action@v4.4.0
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/pf-fleet
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.check.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
