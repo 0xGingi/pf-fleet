@@ -76,20 +76,29 @@ if ! command -v systemctl >/dev/null; then
   exit 0
 fi
 
+# A running agent is asked to restart itself (SIGHUP) instead of being killed: it finishes
+# its lanes' current jobs, then re-execs into the new binary, so a reinstall loses no work.
+start_or_reload() { # $1: "" for the system manager, "--user" for the user manager
+  systemctl $1 daemon-reload
+  systemctl $1 enable pf-fleet-agent >/dev/null 2>&1
+  if systemctl $1 is-active --quiet pf-fleet-agent; then
+    systemctl $1 kill -s HUP --kill-whom=main pf-fleet-agent
+    say "the running agent restarts into the new one after its lanes finish their current jobs"
+  else
+    systemctl $1 restart pf-fleet-agent
+  fi
+}
+
 if [ "$(id -u)" = 0 ]; then
   printf '%s\n' "$UNIT" | sed 's/__TARGET__/multi-user.target/' > /etc/systemd/system/pf-fleet-agent.service
-  systemctl daemon-reload
-  systemctl enable pf-fleet-agent >/dev/null 2>&1
-  systemctl restart pf-fleet-agent
-  say "running: systemctl status pf-fleet-agent / journalctl -u pf-fleet-agent -f"
+  start_or_reload ""
+  say "status: systemctl status pf-fleet-agent / journalctl -u pf-fleet-agent -f"
 else
   mkdir -p "$HOME/.config/systemd/user"
   printf '%s\n' "$UNIT" | sed 's/__TARGET__/default.target/' > "$HOME/.config/systemd/user/pf-fleet-agent.service"
   loginctl enable-linger "$(id -un)" 2>/dev/null || say "could not enable lingering; the agent stops when you log out (ask an admin: loginctl enable-linger $(id -un))"
-  systemctl --user daemon-reload
-  systemctl --user enable pf-fleet-agent >/dev/null 2>&1
-  systemctl --user restart pf-fleet-agent
-  say "running: systemctl --user status pf-fleet-agent / journalctl --user -u pf-fleet-agent -f"
+  start_or_reload --user
+  say "status: systemctl --user status pf-fleet-agent / journalctl --user -u pf-fleet-agent -f"
 fi
 say "done; the node shows up in the dashboard within a few seconds"
 `;

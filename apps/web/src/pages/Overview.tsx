@@ -2,18 +2,20 @@ import { Coins, Gauge, Layers, PackageCheck, Server } from "lucide-react";
 import { Link } from "react-router";
 import { PageHeader } from "@/components/AppShell";
 import { DailyChart } from "@/components/DailyChart";
+import { EventList } from "@/components/EventList";
 import { JobsTable } from "@/components/JobsTable";
 import { LaneProgress } from "@/components/LaneProgress";
 import { StatTile } from "@/components/StatTile";
 import { ThroughputChart } from "@/components/ThroughputChart";
 import { Card, CardHeader } from "@/components/ui/card";
 import { bytes, rate } from "@/lib/format";
-import { useJobs, useNodes, useSummary } from "@/lib/queries";
+import { useEvents, useJobs, useNodes, useSummary } from "@/lib/queries";
 
 export function Overview() {
   const { data: s } = useSummary();
   const { data: nodes = [] } = useNodes();
   const { data: recent } = useJobs({ limit: 8 });
+  const { data: events = [] } = useEvents(undefined, 12);
   const working = nodes.flatMap((n) =>
     n.live.lanes.filter((l) => l.job).map((l) => ({ node: n, lane: l, config: n.lanes.find((c) => c.name === l.name) ?? { name: l.name, enabled: true, drain: false } })),
   );
@@ -54,17 +56,25 @@ export function Overview() {
         <DailyChart />
       </div>
 
-      <Card className="mt-6">
-        <CardHeader
-          title="Recent jobs"
-          actions={
-            <Link to="/jobs" className="text-xs text-text-3 hover:text-text hover:underline">
-              All jobs
-            </Link>
-          }
-        />
-        <JobsTable rows={recent?.rows ?? []} />
-      </Card>
+      <div className="mt-6 grid gap-6 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
+          <CardHeader
+            title="Recent jobs"
+            actions={
+              <Link to="/jobs" className="text-xs text-text-3 hover:text-text hover:underline">
+                All jobs
+              </Link>
+            }
+          />
+          <JobsTable rows={recent?.rows ?? []} />
+        </Card>
+        <Card>
+          <CardHeader title="Recent events" description="Across all nodes" />
+          <div className="max-h-[28rem] overflow-y-auto">
+            <EventList events={events} showNode empty="No events yet." />
+          </div>
+        </Card>
+      </div>
     </>
   );
 }

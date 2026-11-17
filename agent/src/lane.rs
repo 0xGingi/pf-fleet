@@ -73,6 +73,8 @@ pub struct Lane {
     pub restart_pending: bool,
     /// wall-clock ms until which Pirate Face may still hold this lane's lease from a killed worker
     pub lease_free_ms: Option<u64>,
+    /// pirateface version the lane's worker was last started with (None: @latest)
+    pub pf_version: Option<String>,
     pub job: Option<Job>,
     pub logs: Vec<LogLine>,
 }
@@ -93,6 +95,7 @@ impl Lane {
             next_start: None,
             restart_pending: false,
             lease_free_ms: None,
+            pf_version: None,
             job: None,
             logs: Vec::new(),
         }
@@ -347,6 +350,7 @@ impl Lane {
             restarts: self.restarts,
             last_exit: self.last_exit,
             message: self.message.clone(),
+            pf_version: self.pf_version.clone(),
             job: self.job.as_ref().map(|j| ActiveJob {
                 job_id: j.id.clone(),
                 repo: j.repo.clone(),

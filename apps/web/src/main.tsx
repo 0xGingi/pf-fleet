@@ -1,18 +1,20 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { StrictMode, useEffect } from "react";
+import { lazy, StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useNavigate } from "react-router";
 import { Toaster } from "sonner";
 import { AppShell } from "./components/AppShell";
 import { api, ApiError } from "./lib/api";
 import { keys } from "./lib/queries";
-import { Accounts } from "./pages/Accounts";
-import { Jobs } from "./pages/Jobs";
 import { Login } from "./pages/Login";
-import { NodeDetail } from "./pages/NodeDetail";
-import { Nodes } from "./pages/Nodes";
-import { Overview } from "./pages/Overview";
-import { Settings } from "./pages/Settings";
+
+// one chunk per page; the chart library only loads with the pages that draw charts
+const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
+const Nodes = lazy(() => import("./pages/Nodes").then((m) => ({ default: m.Nodes })));
+const NodeDetail = lazy(() => import("./pages/NodeDetail").then((m) => ({ default: m.NodeDetail })));
+const Jobs = lazy(() => import("./pages/Jobs").then((m) => ({ default: m.Jobs })));
+const Accounts = lazy(() => import("./pages/Accounts").then((m) => ({ default: m.Accounts })));
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 import "./index.css";
 
 const queryClient = new QueryClient({

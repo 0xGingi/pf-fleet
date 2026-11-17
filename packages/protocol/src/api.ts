@@ -1,5 +1,5 @@
 /** Dashboard REST/SSE shapes shared by the server and the web app. */
-import type { JobResult, LaneConfig, LaneStatus, LogLine, SystemStats } from "./index";
+import type { EventLevel, JobResult, LaneConfig, LaneStatus, LogLine, SystemStats } from "./index";
 
 export interface NodeLive {
   connected: boolean;
@@ -82,6 +82,43 @@ export interface SettingsView {
   /** agent version this dashboard ships and installs */
   agentVersion: string | null;
   agentArches: string[];
+
+  /** pin lanes to the newest pirateface on PyPI (restarting them after their jobs when it changes) */
+  followPirateface: boolean;
+  /** newest pirateface seen on PyPI */
+  pirateVersion: string | null;
+  pirateCheckedAt: number | null;
+  pirateCheckError: string | null;
+
+  alertWebhookSet: boolean;
+  /** scheme and host of the webhook, enough to recognise it */
+  alertWebhookHint: string | null;
+  alertOffline: boolean;
+  alertLanes: boolean;
+  alertJobs: boolean;
+  alertAgentErrors: boolean;
+  lastAlertError: string | null;
+
+  /** jobs, events and throughput older than this are deleted */
+  retentionDays: number;
+}
+
+export type SettingsPatch = Partial<
+  Pick<SettingsView, "autoUpdateAgents" | "followPirateface" | "alertOffline" | "alertLanes" | "alertJobs" | "alertAgentErrors" | "retentionDays">
+> & {
+  /** set a webhook URL, or null to remove it */
+  alertWebhookUrl?: string | null;
+};
+
+export interface EventView {
+  id: number;
+  nodeId: string;
+  nodeName: string | null;
+  ts: number;
+  level: EventLevel;
+  /** "agent": reported by the node; "dashboard": seen by the dashboard */
+  source: "agent" | "dashboard";
+  text: string;
 }
 
 export interface Throughput {
@@ -109,5 +146,6 @@ export type LiveEvent =
   | { type: "node"; nodeId: string; live: NodeLive }
   | { type: "job"; job: JobView }
   | { type: "log"; nodeId: string; lane: string; lines: LogLine[] }
+  | { type: "event"; event: EventView }
   | { type: "nodes" }
   | { type: "accounts" };

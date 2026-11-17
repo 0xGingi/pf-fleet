@@ -17,7 +17,7 @@ function debounced(fn: () => void, ms: number) {
   };
 }
 
-function apply(qc: QueryClient, e: LiveEvent, later: { jobs: () => void; summary: () => void }) {
+function apply(qc: QueryClient, e: LiveEvent, later: { jobs: () => void; summary: () => void; events: () => void }) {
   switch (e.type) {
     case "node": {
       const patchNode = (n: NodeView): NodeView => (n.id === e.nodeId ? { ...n, live: e.live, lastSeenAt: e.live.ts ?? n.lastSeenAt } : n);
@@ -44,6 +44,9 @@ function apply(qc: QueryClient, e: LiveEvent, later: { jobs: () => void; summary
     case "accounts":
       qc.invalidateQueries({ queryKey: keys.accounts });
       break;
+    case "event":
+      later.events();
+      break;
   }
 }
 
@@ -57,12 +60,13 @@ export function useLive(enabled: boolean): LiveStatus {
       qc.invalidateQueries({ queryKey: ["daily"] });
     }, 800),
     summary: debounced(() => qc.invalidateQueries({ queryKey: keys.summary }), 3000),
+    events: debounced(() => qc.invalidateQueries({ queryKey: ["events"] }), 500),
   });
 
   useEffect(() => {
     if (!enabled) return;
     const es = new EventSource("/api/events", { withCredentials: true });
-    const types: LiveEvent["type"][] = ["node", "job", "log", "nodes", "accounts"];
+    const types: LiveEvent["type"][] = ["node", "job", "log", "nodes", "accounts", "event"];
     for (const t of types) es.addEventListener(t, (m) => apply(qc, JSON.parse((m as MessageEvent).data), later.current));
     es.addEventListener("ready", () => {
       setStatus("live");

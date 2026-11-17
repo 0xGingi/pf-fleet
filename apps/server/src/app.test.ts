@@ -5,7 +5,9 @@ import { createApp } from "./app";
 import { Auth } from "./auth";
 import { Sealer, sha256Bytes } from "./crypto";
 import { openDb } from "./db";
+import { Alerter } from "./alerts";
 import { Hub } from "./hub";
+import { checkPirateface } from "./pypi";
 
 const KEY = "pfct_0123456789abcdef0123456789abcdef";
 
@@ -17,6 +19,13 @@ function setup() {
   const bundle = { version: "0.2.0", binaries: { x86_64: { arch: "x86_64" as const, path: "/dev/null", bytes: bin, sha256: sha256Bytes(bin) } } };
   const hub = new Hub(db, sealer, bundle, () => now);
   const auth = new Auth(db, { user: "admin", password: "hunter2", secureCookie: false, sessionDays: 1 });
+  const posted: { url: string; body: Record<string, unknown> }[] = [];
+  const fakeFetch = async (url: string, init?: RequestInit) => {
+    if (url.startsWith("https://pypi.org/")) return Response.json({ info: { version: "0.2.18" } });
+    posted.push({ url, body: JSON.parse(String(init?.body)) });
+    return new Response("ok");
+  };
+  const alerter = new Alerter(db, hub, fakeFetch, () => now);
   const app = createApp({
     db,
     hub,
@@ -24,12 +33,14 @@ function setup() {
     sealer,
     env: { PUBLIC_URL: "https://fleet.test", WEB_DIR: "", TRUST_PROXY: false },
     dashboardVersion: "0.2.0",
+    alerter,
+    checkPirateface: () => checkPirateface(hub, fakeFetch, () => now),
   });
-  return { app, hub, tick: (ms: number) => (now += ms) };
+  return { app, hub, db, sealer, alerter, posted, tick: (ms: number) => (now += ms) };
 }
 
 describe("dashboard API", () => {
-  const { app, hub, tick } = setup();
+  const { app, hub, db, sealer, alerter, posted, tick } = setup();
   let cookie = "";
   const call = (path: string, init: RequestInit = {}) =>
     app.request(path, { ...init, headers: { cookie, "x-pf-fleet": "1", "content-type": "application/json", ...init.headers } });
@@ -141,5 +152,67 @@ describe("dashboard API", () => {
     const res: CreatedNode = await (await json("POST", `/api/nodes/${node.node.id}/token`)).json();
     expect(res.installCommand).not.toBe(node.installCommand);
     expect(hub.isOnline(node.node.id)).toBe(false);
+  });
+
+  test("agent events and worker logs are stored, and logs survive a dashboard restart", async () => {
+    const id = node.node.id;
+    const ws = { send: () => {}, close: () => {} };
+    hub.attach(id, ws);
+    await hub.handle(id, { type: "event", ts: 5, level: "warn", text: "lost the dashboard connection (x); back after 2s" });
+    await hub.handle(id, { type: "log", lane: "h-1", lines: [{ ts: 6, stream: "out", text: "    leased    a/b" }] });
+    const evs = await (await call(`/api/nodes/${id}/events`)).json();
+    expect(evs[0]).toMatchObject({ level: "warn", source: "agent", nodeName: "hermes" });
+    const restarted = new Hub(db, sealer);
+    expect(restarted.logTail(id, "h-1").map((l) => l.text)).toEqual(["    leased    a/b"]);
+  });
+
+  test("a new pirateface on PyPI is pinned and pushed to agents", async () => {
+    const id = node.node.id;
+    const sent: string[] = [];
+    hub.attach(id, { send: (d: string | Uint8Array) => sent.push(String(d)), close: () => {} });
+    const s = await (await json("POST", "/api/settings/check-pirateface")).json();
+    expect(s).toMatchObject({ pirateVersion: "0.2.18", followPirateface: true });
+    expect(JSON.parse(sent.at(-1)!)).toMatchObject({ type: "config", pirateVersion: "0.2.18" });
+    // turning it off goes back to @latest
+    await json("PATCH", "/api/settings", { followPirateface: false });
+    expect(JSON.parse(sent.at(-1)!)).toMatchObject({ type: "config", pirateVersion: null });
+    await json("PATCH", "/api/settings", { followPirateface: true });
+  });
+
+  test("alerts: webhook settings, refused jobs, offline nodes", async () => {
+    expect((await json("PATCH", "/api/settings", { alertWebhookUrl: "not a url" })).status).toBe(400);
+    const s = await (await json("PATCH", "/api/settings", { alertWebhookUrl: "https://discord.test/api/webhooks/1/secret" })).json();
+    expect(s).toMatchObject({ alertWebhookSet: true, alertWebhookHint: "https://discord.test/…" });
+    expect(JSON.stringify(s)).not.toContain("secret");
+
+    expect((await json("POST", "/api/settings/test-alert")).status).toBe(200);
+    expect(posted.at(-1)!.body).toMatchObject({ kind: "test" });
+
+    const id = node.node.id;
+    hub.attach(id, { send: () => {}, close: () => {} });
+    await hub.handle(id, { type: "job_finished", lane: "h-1", jobId: "j9", result: "refused", url: null, infohash: null, message: "hashes differ", finishedAt: 9 });
+    await Bun.sleep(0);
+    expect(posted.at(-1)!.body).toMatchObject({ kind: "job_failed", node: "hermes" });
+    expect(String(posted.at(-1)!.body.content)).toContain("hashes differ");
+
+    // offline: nothing during the startup grace period, then one alert, then "back online"
+    hub.kick(id, "test");
+    hub.offline().set(id, Date.now());
+    const before = posted.length;
+    await alerter.tick();
+    expect(posted.length).toBe(before);
+    tick(5 * 60_000);
+    hub.offline().set(id, Date.now() - 3 * 60_000);
+    await alerter.tick();
+    await alerter.tick();
+    expect(posted.filter((p) => p.body.kind === "node_offline")).toHaveLength(1);
+    hub.attach(id, { send: () => {}, close: () => {} });
+    await alerter.tick();
+    expect(posted.at(-1)!.body.kind).toBe("node_online");
+  });
+
+  test("history retention is a setting", async () => {
+    expect((await json("PATCH", "/api/settings", { retentionDays: 3 })).status).toBe(400);
+    expect((await (await json("PATCH", "/api/settings", { retentionDays: 30 })).json()).retentionDays).toBe(30);
   });
 });

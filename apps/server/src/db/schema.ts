@@ -71,3 +71,31 @@ export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value", { mode: "json" }).notNull(),
 });
+
+/** The node event log: agent-reported (connection, updates, crashes) and dashboard-side entries. */
+export const events = sqliteTable(
+  "events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    nodeId: text("node_id").notNull(),
+    ts: integer("ts").notNull(),
+    level: text("level").notNull(),
+    source: text("source").notNull(),
+    text: text("text").notNull(),
+  },
+  (t) => [index("events_node_idx").on(t.nodeId, t.ts), index("events_ts_idx").on(t.ts)],
+);
+
+/** Worker output, kept so it survives dashboard restarts (capped per lane by maintenance). */
+export const logs = sqliteTable(
+  "logs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    nodeId: text("node_id").notNull(),
+    lane: text("lane").notNull(),
+    ts: integer("ts").notNull(),
+    stream: text("stream").notNull(),
+    text: text("text").notNull(),
+  },
+  (t) => [index("logs_lane_idx").on(t.nodeId, t.lane, t.id)],
+);

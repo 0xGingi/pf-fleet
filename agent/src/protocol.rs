@@ -13,6 +13,23 @@ pub enum AgentMsg {
     JobStarted(JobStarted),
     JobFinished(JobFinished),
     Log(Log),
+    Event(AgentEvent),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Something about the agent itself, for the node's event log in the dashboard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentEvent {
+    pub ts: u64,
+    pub level: Level,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +92,8 @@ pub struct LaneStatus {
     pub last_exit: Option<i32>,
     pub message: Option<String>,
     pub job: Option<ActiveJob>,
+    /// pirateface version the running worker was started with (None: not running or @latest)
+    pub pf_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -179,6 +198,9 @@ pub struct Config {
     pub max_size_gib: u32,
     pub idle_sec: u32,
     pub pirate_key: Option<String>,
+    /// pirateface version to run; None means `pirateface@latest` (older dashboards omit it)
+    #[serde(default)]
+    pub pirate_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

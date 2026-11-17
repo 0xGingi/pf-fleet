@@ -10,6 +10,7 @@ import { ConfirmButton } from "@/components/Confirm";
 import { InstallCommand } from "@/components/InstallCommand";
 import { JobsTable } from "@/components/JobsTable";
 import { LaneProgress } from "@/components/LaneProgress";
+import { EventList } from "@/components/EventList";
 import { LogViewer } from "@/components/LogViewer";
 import { AgentUpdateBadge, NodeStatusBadge } from "@/components/status";
 import { ThroughputChart } from "@/components/ThroughputChart";
@@ -19,7 +20,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Field, Input, Select, Switch } from "@/components/ui/input";
 import { ApiError, del, patch, post } from "@/lib/api";
 import { ago, bytes, duration } from "@/lib/format";
-import { keys, useAccounts, useJobs, useNode } from "@/lib/queries";
+import { keys, useAccounts, useEvents, useJobs, useNode } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 const LANE_NAME = /^[A-Za-z0-9._-]{1,24}$/;
@@ -120,6 +121,7 @@ function NodeDetailView({ node }: { node: NodeView }) {
         </div>
         <div className="space-y-6">
           <SettingsCard node={node} saving={save.isPending} onSave={(b) => save.mutateAsync(b)} />
+          <EventsCard nodeId={node.id} />
           <DangerCard node={node} />
         </div>
       </div>
@@ -189,6 +191,7 @@ function LanesCard({
                 {s && (s.restarts > 0 || s.pid) && (
                   <p className="mt-1 text-xs text-text-3">
                     {s.pid ? `pid ${s.pid}` : ""}
+                    {s.pfVersion ? ` · pirateface ${s.pfVersion}` : ""}
                     {s.startedAt ? ` · up ${duration(Date.now() - s.startedAt)}` : ""}
                     {s.restarts ? ` · ${s.restarts} restart${s.restarts === 1 ? "" : "s"}` : ""}
                   </p>
@@ -410,6 +413,18 @@ function DangerCard({ node }: { node: NodeView }) {
       <Dialog open={!!rotated} onOpenChange={(v) => !v && setRotated(null)} title={`New install command for ${node.name}`} className="max-w-2xl">
         {rotated && <InstallCommand command={rotated} />}
       </Dialog>
+    </Card>
+  );
+}
+
+function EventsCard({ nodeId }: { nodeId: string }) {
+  const { data = [] } = useEvents(nodeId, 30);
+  return (
+    <Card>
+      <CardHeader title="Events" description="Connection drops, updates, crashes and lease waits" />
+      <div className="max-h-96 overflow-y-auto">
+        <EventList events={data} empty="No events yet." />
+      </div>
     </Card>
   );
 }

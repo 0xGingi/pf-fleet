@@ -1,5 +1,5 @@
 import type { LogLine } from "@pf-fleet/protocol";
-import type { AccountView, DailyRow, JobView, NodeView, SettingsView, Summary, Throughput } from "@pf-fleet/protocol/api";
+import type { AccountView, DailyRow, EventView, JobView, NodeView, SettingsView, Summary, Throughput } from "@pf-fleet/protocol/api";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 
@@ -14,6 +14,7 @@ export const keys = {
   jobs: (q: JobsQuery) => ["jobs", q] as const,
   logs: (nodeId: string, lane: string) => ["logs", nodeId, lane] as const,
   settings: ["settings"] as const,
+  events: (nodeId?: string) => (nodeId ? (["events", nodeId] as const) : (["events"] as const)),
 };
 
 export interface JobsQuery {
@@ -29,6 +30,13 @@ export const useNodes = () => useQuery({ queryKey: keys.nodes, queryFn: () => ap
 export const useNode = (id: string) => useQuery({ queryKey: keys.node(id), queryFn: () => api<NodeView>(`/api/nodes/${id}`) });
 
 export const useSettings = () => useQuery({ queryKey: keys.settings, queryFn: () => api<SettingsView>("/api/settings") });
+
+/** The event log of one node, or of every node when nodeId is omitted. */
+export const useEvents = (nodeId?: string, limit = 50) =>
+  useQuery({
+    queryKey: [...keys.events(nodeId), limit],
+    queryFn: () => api<EventView[]>(nodeId ? `/api/nodes/${nodeId}/events?limit=${limit}` : `/api/node-events?limit=${limit}`),
+  });
 
 export const useAccounts = () => useQuery({ queryKey: keys.accounts, queryFn: () => api<AccountView[]>("/api/accounts") });
 

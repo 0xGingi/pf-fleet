@@ -1,5 +1,5 @@
 import { AgentMessage, JobResult, LaneConfig, type LogLine } from "@pf-fleet/protocol";
-import type { AccountView, CreatedNode, DailyRow, LiveEvent, NodeView, SettingsView, Summary, Throughput } from "@pf-fleet/protocol/api";
+import type { AccountView, CreatedNode, DailyRow, EventView, LiveEvent, NodeView, SettingsView, Summary, Throughput } from "@pf-fleet/protocol/api";
 import { and, count, desc, eq, gte, isNull, like, sql, type SQL } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { getConnInfo, serveStatic, upgradeWebSocket } from "hono/bun";
@@ -7,6 +7,7 @@ import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { join } from "node:path";
 import { z } from "zod";
+import type { Alerter } from "./alerts";
 import type { Auth } from "./auth";
 import { randomToken, safeEqual, type Sealer, sha256 } from "./crypto";
 import { type Db, schema } from "./db";
@@ -15,9 +16,10 @@ import { type AgentSocket, type Hub, jobView, SAMPLE_BUCKET_MS } from "./hub";
 import { INSTALL_SH, installCommand } from "./install";
 import { ARCHES, type Arch } from "./bundle";
 import { laneProblem } from "./lanes";
+import { DEFAULT_RETENTION_DAYS } from "./maintenance";
 import { olderThan } from "./versions";
 
-const { accounts, jobs, nodes, samples } = schema;
+const { accounts, events, jobs, nodes, samples } = schema;
 
 const PIRATE_KEY = /^pfct_[A-Za-z0-9]{16,128}$/;
 const NodeName = z.string().trim().regex(/^[A-Za-z0-9._-]{1,40}$/, "use 1-40 letters, digits, '.', '_' or '-'");
@@ -31,6 +33,9 @@ export interface Deps {
   sealer: Sealer;
   env: Pick<Env, "PUBLIC_URL" | "WEB_DIR" | "TRUST_PROXY">;
   dashboardVersion: string;
+  alerter: Alerter;
+  /** check PyPI for a new pirateface now */
+  checkPirateface: () => Promise<string>;
 }
 
 async function body<S extends z.ZodType>(c: Context, schema: S): Promise<z.infer<S>> {
@@ -354,23 +359,93 @@ export function createApp(d: Deps) {
 
   // settings
 
-  const settingsView = (): SettingsView => ({
-    autoUpdateAgents: hub.autoUpdate(),
-    dashboardVersion: d.dashboardVersion,
-    agentVersion: bundle.version,
-    agentArches: Object.keys(bundle.binaries),
-  });
+  const webhookHint = (url: string | null) => {
+    if (!url) return null;
+    try {
+      const u = new URL(url);
+      return `${u.protocol}//${u.host}/…`;
+    } catch {
+      return "set";
+    }
+  };
+
+  const settingsView = (): SettingsView => {
+    const webhook = hub.getSetting<string | null>("alertWebhookUrl", null);
+    return {
+      autoUpdateAgents: hub.autoUpdate(),
+      dashboardVersion: d.dashboardVersion,
+      agentVersion: bundle.version,
+      agentArches: Object.keys(bundle.binaries),
+      followPirateface: hub.followPirateface(),
+      pirateVersion: hub.getSetting<string | null>("pirateVersion", null),
+      pirateCheckedAt: hub.getSetting<number | null>("pirateCheckedAt", null),
+      pirateCheckError: hub.getSetting<string | null>("pirateCheckError", null),
+      alertWebhookSet: !!webhook,
+      alertWebhookHint: webhookHint(webhook),
+      alertOffline: hub.getSetting("alertOffline", true),
+      alertLanes: hub.getSetting("alertLanes", true),
+      alertJobs: hub.getSetting("alertJobs", true),
+      alertAgentErrors: hub.getSetting("alertAgentErrors", true),
+      lastAlertError: hub.getSetting<string | null>("lastAlertError", null),
+      retentionDays: hub.getSetting("retentionDays", DEFAULT_RETENTION_DAYS),
+    };
+  };
 
   app.get("/api/settings", (c) => c.json(settingsView()));
 
   app.patch("/api/settings", async (c) => {
-    const b = await body(c, z.object({ autoUpdateAgents: z.boolean().optional() }));
-    if (b.autoUpdateAgents !== undefined) {
-      hub.setSetting("autoUpdateAgents", b.autoUpdateAgents);
-      if (b.autoUpdateAgents) hub.updateOutdated();
+    const b = await body(
+      c,
+      z.object({
+        autoUpdateAgents: z.boolean().optional(),
+        followPirateface: z.boolean().optional(),
+        alertWebhookUrl: z.url({ protocol: /^https?$/ }).max(2000).nullable().optional(),
+        alertOffline: z.boolean().optional(),
+        alertLanes: z.boolean().optional(),
+        alertJobs: z.boolean().optional(),
+        alertAgentErrors: z.boolean().optional(),
+        retentionDays: z.number().int().min(7).max(3650).optional(),
+      }),
+    );
+    for (const [key, value] of Object.entries(b)) if (value !== undefined) hub.setSetting(key, value);
+    if (b.autoUpdateAgents) hub.updateOutdated();
+    if (b.followPirateface !== undefined) await hub.sendConfigAll();
+    if (b.alertWebhookUrl !== undefined) hub.setSetting("lastAlertError", null);
+    return c.json(settingsView());
+  });
+
+  app.post("/api/settings/test-alert", async (c) => {
+    if (!hub.getSetting<string | null>("alertWebhookUrl", null)) throw new HTTPException(400, { message: "set a webhook URL first" });
+    const ok = await d.alerter.send({ kind: "test", text: "test alert: notifications from this dashboard arrive here" });
+    if (!ok) throw new HTTPException(502, { message: hub.getSetting("lastAlertError", "the webhook did not accept the alert") });
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/settings/check-pirateface", async (c) => {
+    try {
+      await d.checkPirateface();
+    } catch (e) {
+      throw new HTTPException(502, { message: `could not check PyPI: ${(e as Error).message}` });
     }
     return c.json(settingsView());
   });
+
+  // event log
+
+  const eventViews = (where: SQL | undefined, limit: number): EventView[] =>
+    db
+      .select({ id: events.id, nodeId: events.nodeId, nodeName: nodes.name, ts: events.ts, level: events.level, source: events.source, text: events.text })
+      .from(events)
+      .leftJoin(nodes, eq(events.nodeId, nodes.id))
+      .where(where)
+      .orderBy(desc(events.id))
+      .limit(limit)
+      .all() as EventView[];
+
+  const eventLimit = (c: Context) => Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 500);
+
+  app.get("/api/nodes/:id/events", (c) => c.json(eventViews(eq(events.nodeId, c.req.param("id")), eventLimit(c))));
+  app.get("/api/node-events", (c) => c.json(eventViews(undefined, eventLimit(c))));
 
   app.get("/api/nodes/:id/lanes/:lane/logs", (c) => c.json(hub.logTail(c.req.param("id"), c.req.param("lane")) satisfies LogLine[]));
 

@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Activity, LayoutDashboard, ListChecks, LogOut, Server, Settings, Users } from "lucide-react";
+import { Suspense } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { post } from "@/lib/api";
 import { useLive } from "@/lib/live";
@@ -69,7 +70,9 @@ export function AppShell() {
       </aside>
       <main className="min-w-0 flex-1 px-4 py-6 md:px-8">
         <div className="mx-auto max-w-7xl">
-          <Outlet />
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
     </div>

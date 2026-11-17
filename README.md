@@ -76,6 +76,33 @@ dashboard can start and stop workers on every node, so do not expose it without 
 | Upgrade everything | `docker compose pull && docker compose up -d`. The new dashboard carries the matching agent and pushes it to your nodes (see below). |
 | Move a node to another machine | **New install command**, run it on the new machine. The old agent is disconnected. |
 
+## pirateface releases
+
+The dashboard checks PyPI every 30 minutes and pins every lane to the newest
+`pirateface` (`--from pirateface==<version>`). When a release comes out, each lane
+restarts into it after its current job, so no worker keeps running an old pf until
+it crashes. **Settings → pirateface** shows the version and a *Check now* button;
+turning *Follow new releases* off goes back to `pirateface@latest` at each start.
+
+## Alerts and events
+
+**Settings → Alerts** takes a webhook URL (Discord, Slack, or anything that accepts
+a JSON POST; the body has `content`, `text`, `kind`, `node`, `lane`, `message`).
+It fires when:
+
+- a node has been offline for 2 minutes (and again when it is back),
+- a lane has kept crashing or erroring for 10 minutes (and when it recovers;
+  waiting out a lease does not count),
+- Pirate Face refuses a submission or a job ends in an error,
+- an agent reports an error (uv missing, no key, a failed self-update).
+
+Every node also has an **event log** (node page, and *Recent events* on the
+overview): agent starts, connection drops and how long they lasted, updates,
+worker crashes and lease waits. Worker output and events are stored in SQLite, so
+they survive dashboard restarts. **Settings → History** sets how long jobs, events
+and throughput are kept (180 days by default); worker output keeps the last 1000
+lines per lane.
+
 ## Updates
 
 Each dashboard image ships the agent built from the same commit. When a node
@@ -89,6 +116,9 @@ Nothing is downloaded from anywhere else and no work is lost.
   The node page then offers an **Update agent** button instead.
 - A node is offered an update at most every 30 minutes, so a failed install
   (for example, a read-only binary directory) does not loop.
+- Running the install command again on a node that already runs the agent does not
+  kill it: the new binary is put in place and the agent gets `SIGHUP`, which
+  restarts it into the new binary after its lanes finish their current jobs.
 - To keep the dashboard itself current, run `docker compose pull && docker compose up -d`
   from cron or a systemd timer, or pin `PF_FLEET_TAG` to a minor line such as `0.2`.
 
@@ -163,5 +193,7 @@ Schema changes: edit `apps/server/src/db/schema.ts`, then
 - The agent caps uv/pf thread pools (`RAYON_NUM_THREADS=2` and friends) because
   shared hosts such as seedboxes often limit threads per user.
 - Stopping a worker mid-job loses that job's progress: pf streams models through
-  memory and cannot resume. Prefer *stop after this job*.
+  memory and cannot resume. Pirate Face also keeps the lease for up to 10 minutes,
+  and the lane waits for it to lapse before taking new work. Prefer *stop after
+  this job*.
 - One admin login. Sessions last `SESSION_DAYS` (default 30).

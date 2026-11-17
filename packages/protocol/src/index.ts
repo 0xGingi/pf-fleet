@@ -37,6 +37,8 @@ export const LaneStatus = z.object({
   lastExit: z.number().int().nullable(),
   message: z.string().nullable(),
   job: ActiveJob.nullable(),
+  /** the pirateface version this lane's worker was started with (null: not running, or @latest) */
+  pfVersion: z.string().nullable(),
 });
 export type LaneStatus = z.infer<typeof LaneStatus>;
 
@@ -103,7 +105,12 @@ export type LogLine = z.infer<typeof LogLine>;
 
 export const Log = z.object({ type: z.literal("log"), lane: z.string(), lines: z.array(LogLine) });
 
-export const AgentMessage = z.discriminatedUnion("type", [Hello, Heartbeat, JobStarted, JobFinished, Log]);
+/** Something about the agent itself (connection, updates, lanes failing) for the node's event log. */
+export const EventLevel = z.enum(["info", "warn", "error"]);
+export type EventLevel = z.infer<typeof EventLevel>;
+export const AgentEvent = z.object({ type: z.literal("event"), ts, level: EventLevel, text: z.string() });
+
+export const AgentMessage = z.discriminatedUnion("type", [Hello, Heartbeat, JobStarted, JobFinished, Log, AgentEvent]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 export type Hello = z.infer<typeof Hello>;
 export type Heartbeat = z.infer<typeof Heartbeat>;
@@ -123,6 +130,8 @@ export const Config = z.object({
   maxSizeGiB: z.number().int().nonnegative(),
   idleSec: z.number().int().positive(),
   pirateKey: z.string().nullable(),
+  /** pirateface version to run (the dashboard follows PyPI); null: whatever @latest resolves to */
+  pirateVersion: z.string().nullable(),
 });
 export type Config = z.infer<typeof Config>;
 

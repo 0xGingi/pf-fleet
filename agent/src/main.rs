@@ -12,7 +12,7 @@ mod update;
 
 use anyhow::Result;
 use conn::{Conn, ConnEvent};
-use protocol::{AgentMsg, Hello, ServerMsg};
+use protocol::{AgentMsg, Hello, Level, ServerMsg};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -96,6 +96,13 @@ async fn run(dir: PathBuf) -> Result<()> {
     let mut ticks: u64 = 0;
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
+    // install.sh sends SIGHUP after replacing the binary: re-exec into it once lanes are idle
+    let mut hup = signal(SignalKind::hangup())?;
+    let mut lost: Option<(tokio::time::Instant, String)> = None;
+    sup.event(
+        Level::Info,
+        format!("agent {VERSION} started on {}", system::hostname()),
+    );
 
     loop {
         tokio::select! {
@@ -103,11 +110,18 @@ async fn run(dir: PathBuf) -> Result<()> {
                 ConnEvent::Connected => {
                     eprintln!("pf-fleet-agent: connected");
                     sup.connected = true;
+                    if let Some((since, why)) = lost.take() {
+                        sup.event(
+                            Level::Warn,
+                            format!("lost the dashboard connection ({why}); back after {}s", since.elapsed().as_secs()),
+                        );
+                    }
                     sup.heartbeat();
                 }
                 ConnEvent::Disconnected(why) => {
                     if sup.connected {
                         eprintln!("pf-fleet-agent: disconnected: {why}");
+                        lost = Some((tokio::time::Instant::now(), why));
                     }
                     sup.connected = false;
                 }
@@ -117,7 +131,7 @@ async fn run(dir: PathBuf) -> Result<()> {
                     if u.version == VERSION {
                         eprintln!("pf-fleet-agent: already on {VERSION}; ignoring update");
                     } else {
-                        eprintln!("pf-fleet-agent: receiving agent {}", u.version);
+                        sup.event(Level::Info, format!("receiving agent {} from the dashboard", u.version));
                         sup.update = Some((u, false));
                     }
                 }
@@ -135,6 +149,7 @@ async fn run(dir: PathBuf) -> Result<()> {
                     restart_into(&exe, &mut sup).await;
                 }
             }
+            _ = hup.recv() => sup.request_restart(),
             _ = term.recv() => break,
             _ = int.recv() => break,
         }
@@ -160,11 +175,10 @@ async fn run(dir: PathBuf) -> Result<()> {
 /// systemd and nohup setups both carry on). Workers are already stopped.
 async fn restart_into(exe: &std::path::Path, sup: &mut Supervisor) {
     use std::os::unix::process::CommandExt;
-    let version = sup
-        .staged_update()
-        .map(|u| u.version.clone())
-        .unwrap_or_default();
-    eprintln!("pf-fleet-agent: restarting into agent {version}");
+    match sup.staged_update().map(|u| u.version.clone()) {
+        Some(v) => sup.event(Level::Info, format!("restarting into agent {v}")),
+        None => sup.event(Level::Info, "restarting into the reinstalled agent"),
+    }
     sup.save_leases();
     sup.flush_logs();
     tokio::time::sleep(Duration::from_millis(500)).await; // let the last frames go out

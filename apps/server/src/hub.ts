@@ -1,20 +1,22 @@
 /**
- * Live state: which agents are connected, their last heartbeat, recent log lines, and the
- * fan-out of changes to browsers (SSE). Persists jobs, throughput samples and node facts.
+ * Live state: which agents are connected and their last heartbeat, and the fan-out of changes
+ * to browsers (SSE). Persists jobs, throughput samples, worker logs, events and node facts.
  */
-import type { AgentMessage, Command, Config, Heartbeat, Hello, LogLine, Update } from "@pf-fleet/protocol";
-import type { JobView, LiveEvent, NodeLive } from "@pf-fleet/protocol/api";
-import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
+import type { AgentMessage, Command, Config, EventLevel, Heartbeat, Hello, LogLine, Update } from "@pf-fleet/protocol";
+import type { EventView, JobView, LiveEvent, NodeLive } from "@pf-fleet/protocol/api";
+import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { AgentBundle, Arch } from "./bundle";
 import type { Sealer } from "./crypto";
 import { type Db, schema } from "./db";
 import { olderThan } from "./versions";
 
-const { accounts, jobs, nodes, samples, settings } = schema;
+const { accounts, events, jobs, logs, nodes, samples, settings } = schema;
 /** Do not offer the same node an update more often than this (a failed install would loop). */
 const UPDATE_COOLDOWN_MS = 30 * 60_000;
 const LOG_KEEP = 1000;
 export const SAMPLE_BUCKET_MS = 60_000;
+/** A lane in one of these states with this message is waiting out a lease, not failing. */
+const LEASE_WAIT = "waiting for the previous worker's Pirate Face lease";
 
 /** The bits of a WebSocket the hub uses (Bun's ServerWebSocket fits; tests pass fakes). */
 export interface AgentSocket {
@@ -32,9 +34,12 @@ interface Conn {
 
 export class Hub {
   private conns = new Map<string, Conn>();
-  private logs = new Map<string, LogLine[]>();
   private subs = new Set<(e: LiveEvent) => void>();
   private offered = new Map<string, number>();
+  /** nodeId -> when its agent disconnected (for offline alerts) */
+  private disconnectedAt = new Map<string, number>();
+  /** "nodeId/lane" -> since when the lane has been failing (error or crash backoff) */
+  private troubleSince = new Map<string, { since: number; message: string | null }>();
 
   constructor(
     private db: Db,
@@ -50,12 +55,34 @@ export class Hub {
     return row ? (row.value as T) : fallback;
   }
 
+  /** null removes the setting, so reads fall back to their default. */
   setSetting(key: string, value: unknown) {
+    if (value === null || value === undefined) {
+      this.db.delete(settings).where(eq(settings.key, key)).run();
+      return;
+    }
     this.db.insert(settings).values({ key, value }).onConflictDoUpdate({ target: settings.key, set: { value } }).run();
   }
 
   autoUpdate(): boolean {
     return this.getSetting("autoUpdateAgents", true);
+  }
+
+  followPirateface(): boolean {
+    return this.getSetting("followPirateface", true);
+  }
+
+  /** The pirateface version lanes should run, or null for `pirateface@latest`. */
+  pirateVersion(): string | null {
+    return this.followPirateface() ? this.getSetting<string | null>("pirateVersion", null) : null;
+  }
+
+  // ---------- event log ----------
+
+  addEvent(nodeId: string, level: EventLevel, source: EventView["source"], text: string, ts = this.now()) {
+    const row = this.db.insert(events).values({ nodeId, ts, level, source, text }).returning({ id: events.id }).get();
+    const nodeName = this.db.select({ name: nodes.name }).from(nodes).where(eq(nodes.id, nodeId)).get()?.name ?? null;
+    this.emit({ type: "event", event: { id: row.id, nodeId, nodeName, ts, level, source, text } });
   }
 
   // ---------- agent self-update ----------
@@ -76,6 +103,7 @@ export class Hub {
     this.offered.set(nodeId, this.now());
     conn.ws.send(JSON.stringify({ type: "update", version, sha256: bin.sha256, size: bin.bytes.length, graceful: opts.graceful } satisfies Update));
     conn.ws.send(bin.bytes);
+    this.addEvent(nodeId, "info", "dashboard", `sent agent ${version} (node runs ${conn.hello.agentVersion})`);
     return "sent";
   }
 
@@ -119,19 +147,39 @@ export class Hub {
   }
 
   logTail(nodeId: string, lane: string): LogLine[] {
-    return this.logs.get(`${nodeId}/${lane}`) ?? [];
+    return this.db
+      .select({ ts: logs.ts, stream: logs.stream, text: logs.text })
+      .from(logs)
+      .where(and(eq(logs.nodeId, nodeId), eq(logs.lane, lane)))
+      .orderBy(desc(logs.id))
+      .limit(LOG_KEEP)
+      .all()
+      .reverse() as LogLine[];
+  }
+
+  /** Nodes whose agent has been disconnected (since when), for alerts. */
+  offline(): Map<string, number> {
+    return this.disconnectedAt;
+  }
+
+  /** Lanes failing right now and since when, for alerts. */
+  troubledLanes(): Map<string, { since: number; message: string | null }> {
+    return this.troubleSince;
   }
 
   attach(nodeId: string, ws: AgentSocket) {
     const old = this.conns.get(nodeId);
     if (old && old.ws !== ws) old.ws.close(4000, "replaced by a newer connection");
     this.conns.set(nodeId, { ws, hello: null, connectedAt: this.now(), beat: null, lastProcessed: null });
+    this.disconnectedAt.delete(nodeId);
     this.emit({ type: "node", nodeId, live: this.live(nodeId) });
   }
 
   detach(nodeId: string, ws: AgentSocket) {
     if (this.conns.get(nodeId)?.ws !== ws) return;
     this.conns.delete(nodeId);
+    this.disconnectedAt.set(nodeId, this.now());
+    for (const key of this.troubleSince.keys()) if (key.startsWith(`${nodeId}/`)) this.troubleSince.delete(key);
     this.emit({ type: "node", nodeId, live: this.live(nodeId) });
   }
 
@@ -139,6 +187,7 @@ export class Hub {
   kick(nodeId: string, reason: string) {
     this.conns.get(nodeId)?.ws.close(4001, reason);
     this.conns.delete(nodeId);
+    this.disconnectedAt.delete(nodeId);
   }
 
   async handle(nodeId: string, msg: AgentMessage) {
@@ -192,6 +241,12 @@ export class Hub {
             .run();
         }
         conn.lastProcessed = msg.processedBytes;
+        for (const lane of msg.lanes) {
+          const key = `${nodeId}/${lane.name}`;
+          const failing = lane.state === "error" || (lane.state === "backoff" && !lane.message?.startsWith(LEASE_WAIT));
+          if (!failing) this.troubleSince.delete(key);
+          else if (!this.troubleSince.has(key)) this.troubleSince.set(key, { since: now, message: lane.message });
+        }
         this.db.update(nodes).set({ lastSeenAt: now }).where(eq(nodes.id, nodeId)).run();
         this.emit({ type: "node", nodeId, live: this.live(nodeId) });
         break;
@@ -231,12 +286,17 @@ export class Hub {
         break;
       }
       case "log": {
-        const key = `${nodeId}/${msg.lane}`;
-        const buf = this.logs.get(key) ?? [];
-        buf.push(...msg.lines);
-        if (buf.length > LOG_KEEP) buf.splice(0, buf.length - LOG_KEEP);
-        this.logs.set(key, buf);
+        if (msg.lines.length) {
+          this.db
+            .insert(logs)
+            .values(msg.lines.map((l) => ({ nodeId, lane: msg.lane, ts: l.ts, stream: l.stream, text: l.text })))
+            .run();
+        }
         this.emit({ type: "log", nodeId, lane: msg.lane, lines: msg.lines });
+        break;
+      }
+      case "event": {
+        this.addEvent(nodeId, msg.level, "agent", msg.text, msg.ts);
         break;
       }
     }
@@ -263,7 +323,7 @@ export class Hub {
         console.error(`pf-fleet: cannot decrypt the Pirate Face key for node ${nodeId} (APP_SECRET changed?); set the key again`);
       }
     }
-    return { type: "config", lanes: row.lanes, maxSizeGiB: row.maxSizeGiB, idleSec: row.idleSec, pirateKey };
+    return { type: "config", lanes: row.lanes, maxSizeGiB: row.maxSizeGiB, idleSec: row.idleSec, pirateKey, pirateVersion: this.pirateVersion() };
   }
 
   async sendConfig(nodeId: string): Promise<boolean> {
@@ -272,6 +332,11 @@ export class Hub {
     if (!conn || !cfg) return false;
     conn.ws.send(JSON.stringify(cfg));
     return true;
+  }
+
+  /** Re-send every connected node its config (after a dashboard-wide change). */
+  async sendConfigAll(): Promise<void> {
+    for (const id of this.conns.keys()) await this.sendConfig(id);
   }
 
   command(nodeId: string, cmd: Omit<Command, "type" | "id">): boolean {
@@ -316,3 +381,4 @@ export function jobView(db: Db, id: string): JobView | undefined {
     .where(eq(jobs.id, id))
     .get() as JobView | undefined;
 }
+

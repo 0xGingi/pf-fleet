@@ -1,4 +1,5 @@
 import { websocket } from "hono/bun";
+import { Alerter } from "./alerts";
 import { createApp } from "./app";
 import { loadBundle } from "./bundle";
 import { Auth } from "./auth";
@@ -6,6 +7,8 @@ import { Sealer } from "./crypto";
 import { openDb } from "./db";
 import { loadEnv } from "./env";
 import { Hub } from "./hub";
+import { startMaintenance } from "./maintenance";
+import { checkPirateface, watchPirateface } from "./pypi";
 
 let env;
 try {
@@ -28,7 +31,9 @@ const auth = new Auth(db, {
   sessionDays: env.SESSION_DAYS,
 });
 
-const app = createApp({ db, hub, auth, sealer, env, dashboardVersion: env.APP_VERSION });
+const alerter = new Alerter(db, hub);
+const app = createApp({ db, hub, auth, sealer, env, dashboardVersion: env.APP_VERSION, alerter, checkPirateface: () => checkPirateface(hub) });
+const stops = [alerter.start(), watchPirateface(hub), startMaintenance(db, hub)];
 
 const server = Bun.serve({
   port: env.PORT,
@@ -44,6 +49,7 @@ console.log(
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
+    for (const stop of stops) stop();
     server.stop();
     process.exit(0);
   });

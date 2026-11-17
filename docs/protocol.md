@@ -18,11 +18,13 @@ fails a test. Change the fixtures first.
 | `job_started` | a lane leased a model and knows its size | `lane`, `jobId`, `repo`, `revision`, `files`, `sizeBytes`, `startedAt` |
 | `job_finished` | the job ended | `lane`, `jobId`, `result` (`listed` \| `already_listed` \| `refused` \| `error` \| `aborted`), `url?`, `infohash?`, `message?`, `finishedAt` |
 | `log` | batched worker output | `lane`, `lines: [{ts, stream: out\|err\|agent, text}]` |
+| `event` | something about the agent itself (started, lost the connection and for how long, update steps, a lane crashed, a lease wait, uv or key missing) | `ts`, `level` (`info` \| `warn` \| `error`), `text` |
 
 Lane status: `name`, `state` (`stopped` \| `starting` \| `idle` \| `working` \|
 `backoff` \| `draining` \| `error`), `pid`, `startedAt`, `restarts`, `lastExit`,
 `message`, `job` (`jobId`, `repo`, `revision`, `files`, `sizeBytes`,
-`doneBytes`, `startedAt`, `rateBps`) or null.
+`doneBytes`, `startedAt`, `rateBps`) or null, `pfVersion` (the pirateface version
+the worker was started with, or null).
 
 While disconnected the agent keeps working and queues outgoing frames (job
 events first; old log lines are dropped when the queue is full). It sends
@@ -34,7 +36,7 @@ were running as `aborted` unless they are in `activeJobs`; a later
 
 | type | fields |
 |---|---|
-| `config` | `lanes: [{name, enabled, drain}]`, `maxSizeGiB` (0 = server cap), `idleSec`, `pirateKey` (string or null) |
+| `config` | `lanes: [{name, enabled, drain}]`, `maxSizeGiB` (0 = server cap), `idleSec`, `pirateKey` (string or null), `pirateVersion` (pin workers to `pirateface==<v>`, or null for `pirateface@latest`) |
 | `command` | `id`, `action` (`restart` \| `restart_all`), `lane?`, `graceful` |
 | `update` | `version`, `sha256`, `size`, `graceful`, then **one binary frame** with the agent for the node's CPU |
 
@@ -44,8 +46,8 @@ dashboard is unreachable.
 
 - A lane that is not in `lanes`, or has `enabled: false`, is stopped. With
   `drain: true` it finishes the current job first.
-- When `maxSizeGiB`, `idleSec` or `pirateKey` change, every lane restarts after
-  its current job.
+- When `maxSizeGiB`, `idleSec`, `pirateKey` or `pirateVersion` change, every lane
+  restarts after its current job.
 - `restart` with `graceful: false` kills the worker now (its lease lapses and the
   model goes back to the queue). With `graceful: true` it restarts after the
   current job. A restart also picks up a new `pirateface@latest`.
@@ -61,3 +63,14 @@ dashboard is unreachable.
    job first; with `false` the workers are stopped now.
 4. With no worker left it `exec`s the new binary with the same arguments. The new
    agent reads `state.json`, starts the lanes and says `hello` with its version.
+
+`SIGHUP` (what the install script sends to a running agent after replacing its
+binary) takes the same path from step 3: finish jobs, then exec the binary on disk.
+
+## Leases
+
+Pirate Face holds a lease for 10 minutes after its last renewal and pf cannot release
+or resume one. A lane whose worker died mid-job waits 10.5 minutes before starting
+again; an unexpected `409 ... already hold lease` is rechecked every 60 s without
+backoff. Leases still held at shutdown are written to `leases.json` and honoured by
+the next agent process.

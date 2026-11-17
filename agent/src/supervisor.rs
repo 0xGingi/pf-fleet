@@ -2,6 +2,7 @@
 //! turns their output into protocol messages, and builds heartbeats.
 
 use crate::config;
+use crate::lane::LEASE_WAIT_MESSAGE;
 use crate::lane::{Lane, Proc};
 use crate::parser::clean;
 use crate::protocol::*;
@@ -61,6 +62,9 @@ pub struct Supervisor {
     pub connected: bool,
     /// announced by the dashboard; `staged` once the binary is verified and swapped in
     pub update: Option<(Update, bool)>,
+    restart_requested: bool,
+    /// last blocker reported as an event, so it is reported once, not every second
+    reported_blocker: Option<String>,
     out: UnboundedSender<AgentMsg>,
     ev_tx: UnboundedSender<ProcEv>,
     active_jobs: Arc<Mutex<Vec<String>>>,
@@ -85,6 +89,8 @@ impl Supervisor {
             gen: 0,
             connected: false,
             update: None,
+            restart_requested: false,
+            reported_blocker: None,
             out,
             ev_tx,
             active_jobs,
@@ -107,6 +113,34 @@ impl Supervisor {
         let _ = self.out.send(msg);
     }
 
+    /// An entry for the node's event log in the dashboard (also in the journal).
+    pub fn event(&self, level: Level, text: impl Into<String>) {
+        let text = text.into();
+        eprintln!("pf-fleet-agent: {text}");
+        self.send(AgentMsg::Event(AgentEvent {
+            ts: now_ms(),
+            level,
+            text,
+        }));
+    }
+
+    /// A reinstall (SIGHUP) or update wants this process replaced once the lanes are idle.
+    pub fn request_restart(&mut self) {
+        if !self.restart_requested {
+            self.restart_requested = true;
+            self.event(
+                Level::Info,
+                "restart requested (agent reinstalled); restarting once every lane finishes its job",
+            );
+            self.reconcile();
+        }
+    }
+
+    /// No new jobs: a new agent takes over as soon as the lanes are idle.
+    fn restarting(&self) -> bool {
+        self.restart_requested || self.staged_update().is_some()
+    }
+
     fn agent_log(&mut self, lane: &str, text: String) {
         eprintln!("[{lane}] {text}");
         if let Some(l) = self.lanes.get_mut(lane) {
@@ -120,8 +154,13 @@ impl Supervisor {
 
     pub fn apply_config(&mut self, cfg: Config, save: bool) {
         let worker_args_changed = self.cfg.as_ref().is_some_and(|p| {
-            (p.max_size_gib, p.idle_sec, &p.pirate_key)
-                != (cfg.max_size_gib, cfg.idle_sec, &cfg.pirate_key)
+            (p.max_size_gib, p.idle_sec, &p.pirate_key, &p.pirate_version)
+                != (
+                    cfg.max_size_gib,
+                    cfg.idle_sec,
+                    &cfg.pirate_key,
+                    &cfg.pirate_version,
+                )
         });
         for lc in &cfg.lanes {
             let lane = self
@@ -172,14 +211,17 @@ impl Supervisor {
         };
         match crate::update::install(exe, &meta, bytes) {
             Ok(()) => {
-                eprintln!(
-                    "pf-fleet-agent: agent {} installed; restarting into it {}",
-                    meta.version,
-                    if meta.graceful {
-                        "once every lane finishes its job"
-                    } else {
-                        "now"
-                    }
+                self.event(
+                    Level::Info,
+                    format!(
+                        "agent {} installed; restarting into it {}",
+                        meta.version,
+                        if meta.graceful {
+                            "once every lane finishes its job"
+                        } else {
+                            "now"
+                        }
+                    ),
                 );
                 self.update = Some((meta.clone(), true));
                 if !meta.graceful {
@@ -191,34 +233,42 @@ impl Supervisor {
                 self.reconcile();
             }
             Err(e) => {
-                eprintln!("pf-fleet-agent: update to {} failed: {e:#}", meta.version);
+                self.event(
+                    Level::Error,
+                    format!("update to agent {} failed: {e:#}", meta.version),
+                );
                 self.update = None;
             }
         }
     }
 
-    /// True when a staged update can take over (no worker left running).
+    /// True when a new agent can take over (no worker left running).
     pub fn ready_to_restart(&self) -> bool {
-        self.staged_update().is_some() && self.running() == 0
+        self.restarting() && self.running() == 0
     }
 
     /// Bring processes in line with the desired state. Called on every change and every second.
     pub fn reconcile(&mut self) {
         let now = Instant::now();
-        let updating = self.staged_update().is_some();
-        let blocker = match (
-            &self.uvx,
-            self.cfg.as_ref().and_then(|c| c.pirate_key.as_ref()),
-        ) {
-            (None, _) => Some(
+        let updating = self.restarting();
+        // nothing to block before the dashboard has sent a config (no lanes yet either)
+        let blocker = match (&self.uvx, self.cfg.as_ref().map(|c| c.pirate_key.as_ref())) {
+            (_, None) => None,
+            (None, Some(_)) => Some(
                 "uv is not installed on this node (no uvx found); run the install command again"
                     .to_string(),
             ),
-            (_, None) => Some(
+            (_, Some(None)) => Some(
                 "no Pirate Face key: set one on this node's account in the dashboard".to_string(),
             ),
             _ => None,
         };
+        if blocker != self.reported_blocker {
+            if let Some(b) = &blocker {
+                self.event(Level::Error, b.clone());
+            }
+            self.reported_blocker = blocker.clone();
+        }
         let names: Vec<String> = self.lanes.keys().cloned().collect();
         for name in names {
             let lane = self.lanes.get_mut(&name).expect("from keys");
@@ -256,8 +306,11 @@ impl Supervisor {
                     continue;
                 }
                 if lane.lease_blocked(now_ms()) {
-                    lane.state = LaneState::Backoff;
-                    lane.message = Some(crate::lane::LEASE_WAIT_MESSAGE.into());
+                    if lane.message.as_deref() != Some(LEASE_WAIT_MESSAGE) {
+                        lane.state = LaneState::Backoff;
+                        lane.message = Some(LEASE_WAIT_MESSAGE.into());
+                        self.event(Level::Info, format!("lane {name} is {LEASE_WAIT_MESSAGE}"));
+                    }
                     continue;
                 }
                 if lane.next_start.is_none_or(|t| t <= now) {
@@ -287,18 +340,16 @@ impl Supervisor {
         };
         self.gen += 1;
         let gen = self.gen;
+        // the dashboard follows PyPI and pins a version, so every lane runs the same one and
+        // a new release restarts them (after their jobs) instead of waiting for a crash
+        let pf_version = cfg.pirate_version.clone().filter(|v| valid_version(v));
+        let package = match &pf_version {
+            Some(v) => format!("pirateface=={v}"),
+            None => "pirateface@latest".to_string(),
+        };
         let mut cmd = tokio::process::Command::new(&uvx);
         cmd.args([
-            "-p",
-            "3.13",
-            "--from",
-            "pirateface@latest",
-            "pf",
-            "work",
-            "-y",
-            "--name",
-            name,
-            "--idle",
+            "-p", "3.13", "--from", &package, "pf", "work", "-y", "--name", name, "--idle",
         ])
         .arg(cfg.idle_sec.to_string());
         if cfg.max_size_gib > 0 {
@@ -334,6 +385,7 @@ impl Supervisor {
                 });
                 lane.state = LaneState::Starting;
                 lane.message = None;
+                lane.pf_version = pf_version.clone();
                 lane.next_start = None;
                 let (stdout, stderr) = (
                     child.stdout.take().expect("piped"),
@@ -442,12 +494,21 @@ impl Supervisor {
                 let retry = l
                     .next_start
                     .map(|t| t.saturating_duration_since(Instant::now()).as_secs());
+                let reason = l.message.clone();
                 for m in fx.msgs {
                     self.send(m);
                 }
                 let code = code.map_or("signal".to_string(), |c| c.to_string());
                 let text = match retry {
-                    Some(s) if s > 0 => format!("pf work exited ({code}); retrying in {s}s"),
+                    Some(s) if s > 0 => {
+                        // a crash (not a stop we asked for): worth a line in the node's event log
+                        let why = reason.map(|r| format!(": {r}")).unwrap_or_default();
+                        self.event(
+                            Level::Warn,
+                            format!("lane {lane}: pf work exited ({code}){why}; retrying in {s}s"),
+                        );
+                        format!("pf work exited ({code}); retrying in {s}s")
+                    }
                     _ => format!("pf work exited ({code})"),
                 };
                 self.agent_log(&lane, text);
@@ -593,5 +654,27 @@ async fn pump<R: AsyncRead + Unpin>(
                 });
             }
         }
+    }
+}
+
+/// Versions go on a command line as `pirateface==<v>`: allow only what PyPI versions use.
+fn valid_version(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 40
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".+-".contains(c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_version;
+
+    #[test]
+    fn versions_for_the_command_line() {
+        assert!(valid_version("0.2.17"));
+        assert!(valid_version("1.0.0rc1"));
+        assert!(!valid_version(""));
+        assert!(!valid_version("0.2; rm -rf"));
+        assert!(!valid_version("--index-url=x"));
     }
 }
