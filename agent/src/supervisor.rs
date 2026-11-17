@@ -6,7 +6,7 @@ use crate::lane::{Lane, Proc};
 use crate::parser::clean;
 use crate::protocol::*;
 use crate::system;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -65,6 +65,9 @@ pub struct Supervisor {
     ev_tx: UnboundedSender<ProcEv>,
     active_jobs: Arc<Mutex<Vec<String>>>,
     state_path: PathBuf,
+    /// leases.json: leases a previous agent process left behind, applied as lanes appear
+    leases_path: PathBuf,
+    held_leases: HashMap<String, u64>,
 }
 
 impl Supervisor {
@@ -85,6 +88,8 @@ impl Supervisor {
             out,
             ev_tx,
             active_jobs,
+            held_leases: config::take_leases(&state_path.with_file_name("leases.json")),
+            leases_path: state_path.with_file_name("leases.json"),
             state_path,
         };
         if let Some(cfg) = config::load_state(&s.state_path) {
@@ -123,6 +128,9 @@ impl Supervisor {
                 .lanes
                 .entry(lc.name.clone())
                 .or_insert_with(|| Lane::new(&lc.name));
+            if let Some(until) = self.held_leases.remove(&lc.name) {
+                lane.lease_free_ms = Some(until);
+            }
             if lane.enabled != lc.enabled {
                 lane.next_start = None; // a fresh enable starts now, not after an old backoff
             }
@@ -245,6 +253,11 @@ impl Supervisor {
                 if let Some(msg) = &blocker {
                     lane.state = LaneState::Error;
                     lane.message = Some(msg.clone());
+                    continue;
+                }
+                if lane.lease_blocked(now_ms()) {
+                    lane.state = LaneState::Backoff;
+                    lane.message = Some(crate::lane::LEASE_WAIT_MESSAGE.into());
                     continue;
                 }
                 if lane.next_start.is_none_or(|t| t <= now) {
@@ -525,6 +538,24 @@ impl Supervisor {
 
     pub fn running(&self) -> usize {
         self.lanes.values().filter(|l| l.proc.is_some()).count()
+    }
+
+    /// Remember leases killed workers still hold, so the next agent process waits them out
+    /// instead of being refused (called before exiting or re-exec'ing).
+    pub fn save_leases(&self) {
+        let now = now_ms();
+        let held: HashMap<&str, u64> = self
+            .lanes
+            .iter()
+            .filter_map(|(n, l)| {
+                l.lease_free_ms
+                    .filter(|t| *t > now)
+                    .map(|t| (n.as_str(), t))
+            })
+            .collect();
+        if let Err(e) = config::save_leases(&self.leases_path, &held) {
+            eprintln!("pf-fleet-agent: could not save held leases: {e}");
+        }
     }
 
     pub fn stop_all(&mut self) {

@@ -149,6 +149,7 @@ async fn run(dir: PathBuf) -> Result<()> {
             _ = tokio::time::sleep_until(deadline) => break,
         }
     }
+    sup.save_leases();
     sup.flush_logs();
     // give the connection a moment to send the last job events
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -164,6 +165,7 @@ async fn restart_into(exe: &std::path::Path, sup: &mut Supervisor) {
         .map(|u| u.version.clone())
         .unwrap_or_default();
     eprintln!("pf-fleet-agent: restarting into agent {version}");
+    sup.save_leases();
     sup.flush_logs();
     tokio::time::sleep(Duration::from_millis(500)).await; // let the last frames go out
     let err = std::process::Command::new(exe)

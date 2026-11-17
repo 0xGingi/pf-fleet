@@ -262,7 +262,10 @@ function LanesCard({
           </>
         }
       >
-        <p className="text-sm text-text-2">Stopping now drops the lease; the model goes back to the queue and the work so far is lost.</p>
+        <p className="text-sm text-text-2">
+          Stopping now loses the work so far. Pirate Face keeps the lease for up to 10 minutes before the model goes back to the queue, and this lane
+          cannot take a new job until it lapses.
+        </p>
       </Dialog>
     </Card>
   );

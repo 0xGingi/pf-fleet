@@ -67,9 +67,37 @@ pub fn save_state(path: &Path, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Reads and deletes leases.json (lane -> epoch ms until its lease lapses). Missing is fine.
+pub fn take_leases(path: &Path) -> std::collections::HashMap<String, u64> {
+    let held = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(path);
+    held
+}
+
+pub fn save_leases(path: &Path, held: &std::collections::HashMap<&str, u64>) -> Result<()> {
+    if held.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    std::fs::write(path, serde_json::to_string(held)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leases_round_trip_and_are_consumed_once() {
+        let path =
+            std::env::temp_dir().join(format!("pf-fleet-leases-{}.json", std::process::id()));
+        save_leases(&path, &[("w1", 42u64)].into_iter().collect()).unwrap();
+        assert_eq!(take_leases(&path).get("w1"), Some(&42));
+        assert!(take_leases(&path).is_empty());
+    }
 
     #[test]
     fn ws_urls() {

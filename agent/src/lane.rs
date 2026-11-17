@@ -13,6 +13,14 @@ const BACKOFF_BASE: Duration = Duration::from_secs(10);
 const BACKOFF_MAX: Duration = Duration::from_secs(300);
 /// A worker that ran this long before dying resets the backoff.
 const HEALTHY_RUN: Duration = Duration::from_secs(600);
+/// Pirate Face keeps a lease for 10 minutes after its last renewal and pf cannot release
+/// it, so a lane whose worker died mid-job must wait this long before leasing again.
+pub const LEASE_LAPSE_MS: u64 = 10 * 60_000 + 30_000;
+/// A refused lease we did not see coming (e.g. the agent itself was restarted mid-job):
+/// check again this often instead of backing off exponentially.
+const LEASE_RECHECK_MS: u64 = 60_000;
+pub const LEASE_WAIT_MESSAGE: &str =
+    "waiting for the previous worker's Pirate Face lease to lapse (up to 10 minutes)";
 
 pub struct Proc {
     pub pid: u32,
@@ -63,6 +71,8 @@ pub struct Lane {
     fails: u32,
     pub next_start: Option<Instant>,
     pub restart_pending: bool,
+    /// wall-clock ms until which Pirate Face may still hold this lane's lease from a killed worker
+    pub lease_free_ms: Option<u64>,
     pub job: Option<Job>,
     pub logs: Vec<LogLine>,
 }
@@ -82,6 +92,7 @@ impl Lane {
             fails: 0,
             next_start: None,
             restart_pending: false,
+            lease_free_ms: None,
             job: None,
             logs: Vec::new(),
         }
@@ -275,9 +286,18 @@ impl Lane {
     }
 
     /// The worker process ended (after all its output was read).
+    /// True while a lease from a killed worker may still block this lane.
+    pub fn lease_blocked(&self, now_ms: u64) -> bool {
+        self.lease_free_ms.is_some_and(|t| t > now_ms)
+    }
+
     pub fn on_exit(&mut self, code: Option<i32>, now_ms: u64, now: Instant) -> Effects {
         let mut fx = Effects::default();
         self.flush_pending(now_ms, &mut fx);
+        if self.job.is_some() {
+            // killed mid-job: its lease stays held until it lapses
+            self.lease_free_ms = Some(now_ms + LEASE_LAPSE_MS);
+        }
         let why = format!(
             "worker exited ({})",
             code.map_or("signal".into(), |c| format!("code {c}"))
@@ -293,6 +313,16 @@ impl Lane {
                 self.next_start = None;
                 self.state = LaneState::Stopped;
             }
+        } else if self
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("already hold lease"))
+        {
+            // a lease from an earlier worker we did not track (the agent restarted mid-job);
+            // not a failure of this worker, so no exponential backoff
+            self.lease_free_ms = Some(now_ms + LEASE_RECHECK_MS);
+            self.next_start = None;
+            self.state = LaneState::Backoff;
         } else {
             self.restarts += 1;
             if now.duration_since(p.started) >= HEALTHY_RUN {
@@ -456,6 +486,31 @@ mod tests {
             &["    Already listed: https://pirateface.co/a/b (h)"],
         );
         assert!(fx.stop_now);
+    }
+
+    #[test]
+    fn a_worker_killed_mid_job_waits_for_its_lease() {
+        let mut l = running("w1");
+        feed(&mut l, JOB);
+        l.proc.as_mut().unwrap().stopping = true;
+        l.proc.as_mut().unwrap().restart_after = true;
+        l.on_exit(None, 1_000, Instant::now());
+        assert!(l.lease_blocked(1_000 + LEASE_LAPSE_MS - 1));
+        assert!(!l.lease_blocked(1_000 + LEASE_LAPSE_MS));
+    }
+
+    #[test]
+    fn a_refused_stale_lease_rechecks_without_backoff() {
+        let mut l = running("w1");
+        feed(
+            &mut l,
+            &["error: lease refused (409): You already hold lease e015. Renew it with {}."],
+        );
+        l.on_exit(Some(1), 5_000, Instant::now());
+        assert_eq!(l.state, LaneState::Backoff);
+        assert_eq!(l.restarts, 0);
+        assert!(l.lease_blocked(5_000 + LEASE_RECHECK_MS - 1));
+        assert!(!l.lease_blocked(5_000 + LEASE_RECHECK_MS));
     }
 
     #[test]
