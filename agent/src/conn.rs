@@ -13,8 +13,11 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 
 const QUEUE_MAX: usize = 5000;
-/// The dashboard pings idle sockets; silence this long means the connection is dead.
-const READ_TIMEOUT: Duration = Duration::from_secs(150);
+/// We ping the dashboard this often; its pong proves the link is alive (and keeps proxies
+/// that time out quiet upstreams from closing it).
+const PING_EVERY: Duration = Duration::from_secs(30);
+/// No frame at all (not even a pong) for this long means the connection is dead.
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub enum ConnEvent {
     Connected,
@@ -68,11 +71,19 @@ impl Conn {
         let mut queue = Queue(VecDeque::new());
         let mut backoff = Duration::from_secs(1);
         loop {
-            let reason = match self.session(&mut out_rx, &mut queue, &events).await {
+            let mut connected = false;
+            let reason = match self
+                .session(&mut out_rx, &mut queue, &events, &mut connected)
+                .await
+            {
                 Ok(()) => "closed by dashboard".to_string(),
                 Err(e) => e.to_string(),
             };
             let _ = events.send(ConnEvent::Disconnected(reason));
+            if connected {
+                // a working connection dropped: retry fast; only repeated failures back off
+                backoff = Duration::from_secs(1);
+            }
             // wait, but keep collecting outgoing frames meanwhile
             let until = Instant::now() + backoff;
             loop {
@@ -90,6 +101,7 @@ impl Conn {
         out_rx: &mut UnboundedReceiver<AgentMsg>,
         queue: &mut Queue,
         events: &UnboundedSender<ConnEvent>,
+        connected: &mut bool,
     ) -> anyhow::Result<()> {
         let mut req = self.url.as_str().into_client_request()?;
         req.headers_mut().insert(
@@ -116,8 +128,10 @@ impl Conn {
             queue.0.pop_front();
         }
         let _ = events.send(ConnEvent::Connected);
+        *connected = true;
 
         let mut last_read = Instant::now();
+        let mut last_ping = Instant::now();
         let mut check = tokio::time::interval(Duration::from_secs(5));
         loop {
             tokio::select! {
@@ -147,6 +161,10 @@ impl Conn {
                 _ = check.tick() => {
                     if last_read.elapsed() > READ_TIMEOUT {
                         anyhow::bail!("no traffic from the dashboard for {}s", READ_TIMEOUT.as_secs());
+                    }
+                    if last_ping.elapsed() >= PING_EVERY {
+                        last_ping = Instant::now();
+                        tx.send(Message::Ping(Vec::new().into())).await?;
                     }
                 }
             }
