@@ -4,6 +4,14 @@ What changed in each pf-fleet release, in plain words. To update, run
 `docker compose pull && docker compose up -d` on your dashboard. Your nodes update
 their agents on their own, after they finish whatever they're working on.
 
+## 0.1.4 (not released yet)
+
+**Dressed like Pirate Face.** The dashboard now matches pirateface.co: the pirate
+logo, a blackletter "Fleet", Pirate Face's dark navy and copper colours and its fonts.
+Navigation moved to a top bar, the numbers are bigger and easier to read, and the
+overview puts recent jobs full width so no column gets cut off. It also works better
+on a phone. Light mode follows your system setting.
+
 ## 0.1.3
 
 The "my lanes say starting forever" fix.

@@ -15,15 +15,13 @@ export function Login() {
   const qc = useQueryClient();
 
   return (
-    <div className="flex min-h-full items-center justify-center px-4">
+    <div className="flex min-h-full flex-col items-center justify-center gap-6 px-4">
+      <div className="flex flex-col items-center text-center">
+        <img src="/logo.png" alt="" className="size-20" />
+        <h1 className="mt-3 font-display text-4xl">Pirate Face Fleet</h1>
+        <p className="mt-1 text-[15px] text-text-3">Your Pirate Face workers, on every machine</p>
+      </div>
       <Card className="w-full max-w-sm p-6">
-        <div className="mb-6 flex items-center gap-2">
-          <img src="/favicon.svg" alt="" className="size-7" />
-          <div>
-            <h1 className="text-base font-semibold">pf-fleet</h1>
-            <p className="text-xs text-text-3">Pirate Face worker dashboard</p>
-          </div>
-        </div>
         <form
           className="space-y-4"
           onSubmit={async (e) => {

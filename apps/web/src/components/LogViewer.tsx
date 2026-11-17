@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "./ui/button";
 
 function lineColor(stream: LogLine["stream"], text: string): string {
-  if (stream === "agent") return "text-primary";
+  if (stream === "agent") return "text-brand-text";
   if (text.startsWith("error")) return "text-critical";
   return "text-text-2";
 }

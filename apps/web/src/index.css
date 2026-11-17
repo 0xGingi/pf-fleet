@@ -1,79 +1,33 @@
+@import "@fontsource-variable/source-sans-3";
+@import "@fontsource/unifrakturmaguntia/latin-400.css";
 @import "tailwindcss";
 
-/* Semantic tokens. Light first; dark under the OS preference unless the user picked light,
-   and under an explicit dark pick. Chart colours are the dataviz reference palette
-   (validated categorical order + fixed status steps), each mode stepped for its surface. */
+/* Pirate Face's look: deep navy-black, copper brand, Source Sans, a blackletter wordmark.
+   Dark by default (like pirateface.co), light under an explicit light pick or a light OS
+   preference. Chart colours are the dataviz reference palette, each mode stepped for its surface. */
 :root {
-  color-scheme: light;
-  --background: #f4f4f2;
-  --surface: #fcfcfb;
-  --surface-2: #f0efec;
-  --border: #e2e1dc;
-  --text: #0b0b0b;
-  --text-2: #52514e;
-  --text-3: #7a7974;
-  --primary: #2a78d6;
-  --primary-fg: #ffffff;
-  --ring: #2a78d6;
-  --good: #0ca30c;
-  --good-text: #006300;
-  --warning: #fab219;
-  --warning-text: #8a5a00;
-  --serious: #ec835a;
-  --critical: #d03b3b;
-  --neutral: #8c8b85;
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
-  --series-6: #008300;
-  --series-7: #6250d6;
-  --series-8: #e34948;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --background: #111110;
-    --surface: #1a1a19;
-    --surface-2: #232321;
-    --border: #2f2f2c;
-    --text: #f0efec;
-    --text-2: #c3c2b7;
-    --text-3: #8f8e86;
-    --primary: #3987e5;
-    --primary-fg: #ffffff;
-    --ring: #3987e5;
-    --good-text: #3fcf3f;
-    --warning-text: #fab219;
-    --neutral: #6f6e68;
-    --series-1: #3987e5;
-    --series-2: #d95926;
-    --series-3: #199e70;
-    --series-4: #c98500;
-    --series-5: #d55181;
-    --series-6: #0ca30c;
-    --series-7: #9085e9;
-    --series-8: #e66767;
-  }
-}
-
-:root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #111110;
-  --surface: #1a1a19;
-  --surface-2: #232321;
-  --border: #2f2f2c;
-  --text: #f0efec;
-  --text-2: #c3c2b7;
-  --text-3: #8f8e86;
-  --primary: #3987e5;
-  --primary-fg: #ffffff;
-  --ring: #3987e5;
-  --good-text: #3fcf3f;
+  --background: #070b13;
+  --surface: #111723;
+  --surface-2: #1a2130;
+  --border: #232b3a;
+  --border-strong: #303a4c;
+  --text: #ffffff;
+  --text-2: #b4bac6;
+  --text-3: #7f8797;
+  --primary: #ffffff;
+  --primary-fg: #000000;
+  --brand: #c4884a;
+  --brand-text: #d8a24e;
+  --ring: #c4884a;
+  --info: #3987e5;
+  --good: #1baf7a;
+  --good-text: #3fcf9a;
+  --warning: #fab219;
   --warning-text: #fab219;
-  --neutral: #6f6e68;
+  --serious: #ec835a;
+  --critical: #e66767;
+  --neutral: #5b6475;
   --series-1: #3987e5;
   --series-2: #d95926;
   --series-3: #199e70;
@@ -84,17 +38,89 @@
   --series-8: #e66767;
 }
 
+@media (prefers-color-scheme: light) {
+  :root:where(:not([data-theme="dark"])) {
+    color-scheme: light;
+    --background: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f6f4f0;
+    --border: #e8e4dc;
+    --border-strong: #d6d0c4;
+    --text: #000000;
+    --text-2: #4f4a43;
+    --text-3: #7a756d;
+    --primary: #1c1c20;
+    --primary-fg: #ffffff;
+    --brand: #c4884a;
+    --brand-text: #a86c2e;
+    --ring: #a86c2e;
+    --info: #2a78d6;
+    --good: #199e70;
+    --good-text: #006b48;
+    --warning: #fab219;
+    --warning-text: #8a5a00;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --neutral: #a8a296;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #6250d6;
+    --series-8: #e34948;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f6f4f0;
+  --border: #e8e4dc;
+  --border-strong: #d6d0c4;
+  --text: #000000;
+  --text-2: #4f4a43;
+  --text-3: #7a756d;
+  --primary: #1c1c20;
+  --primary-fg: #ffffff;
+  --brand: #c4884a;
+  --brand-text: #a86c2e;
+  --ring: #a86c2e;
+  --info: #2a78d6;
+  --good: #199e70;
+  --good-text: #006b48;
+  --warning: #fab219;
+  --warning-text: #8a5a00;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --neutral: #a8a296;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-text: var(--text);
   --color-text-2: var(--text-2);
   --color-text-3: var(--text-3);
   --color-primary: var(--primary);
   --color-primary-fg: var(--primary-fg);
+  --color-brand: var(--brand);
+  --color-brand-text: var(--brand-text);
   --color-ring: var(--ring);
+  --color-info: var(--info);
   --color-good: var(--good);
   --color-good-text: var(--good-text);
   --color-warning: var(--warning);
@@ -102,8 +128,9 @@
   --color-serious: var(--serious);
   --color-critical: var(--critical);
   --color-neutral: var(--neutral);
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-sans: "Source Sans 3 Variable", "Source Sans Pro", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-display: "UnifrakturMaguntia", var(--font-sans);
 }
 
 @layer base {
@@ -119,8 +146,12 @@
     background: var(--background);
     color: var(--text);
     font-family: var(--font-sans);
+    font-size: 15px;
     -webkit-font-smoothing: antialiased;
     font-feature-settings: "tnum" 1;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--brand) 35%, transparent);
   }
   :focus-visible {
     outline: 2px solid var(--ring);

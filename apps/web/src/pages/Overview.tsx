@@ -52,29 +52,29 @@ export function Overview() {
         </Card>
       </div>
 
-      <div className="mt-6">
-        <DailyChart />
-      </div>
-
       <div className="mt-6 grid gap-6 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
-          <CardHeader
-            title="Recent jobs"
-            actions={
-              <Link to="/jobs" className="text-xs text-text-3 hover:text-text hover:underline">
-                All jobs
-              </Link>
-            }
-          />
-          <JobsTable rows={recent?.rows ?? []} />
-        </Card>
-        <Card>
+        <div className="xl:col-span-2">
+          <DailyChart />
+        </div>
+        <Card className="flex max-h-[22.5rem] flex-col">
           <CardHeader title="Recent events" description="Across all nodes" />
-          <div className="max-h-[28rem] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <EventList events={events} showNode empty="No events yet." />
           </div>
         </Card>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader
+          title="Recent jobs"
+          actions={
+            <Link to="/jobs" className="text-[13px] font-semibold text-text-2 hover:text-brand-text">
+              All jobs →
+            </Link>
+          }
+        />
+        <JobsTable rows={recent?.rows ?? []} />
+      </Card>
     </>
   );
 }

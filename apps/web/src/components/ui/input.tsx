@@ -2,7 +2,7 @@ import { forwardRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAt
 import { cn } from "@/lib/utils";
 
 const field =
-  "h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none disabled:opacity-60";
+  "h-9 w-full rounded-md border border-border-strong bg-surface px-3 text-sm text-text placeholder:text-text-3 focus:border-brand focus:outline-none disabled:opacity-60";
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(({ className, ...props }, ref) => (
   <input ref={ref} className={cn(field, className)} {...props} />
@@ -38,7 +38,7 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
-        checked ? "bg-primary" : "bg-surface-2 ring-1 ring-border ring-inset",
+        checked ? "bg-brand" : "bg-surface-2 ring-1 ring-border ring-inset",
       )}
     >
       <span className={cn("inline-block size-4 rounded-full bg-white shadow transition-transform", checked ? "translate-x-4.5" : "translate-x-0.5")} />
