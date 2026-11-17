@@ -5,10 +5,9 @@
 import type { AgentMessage, Command, Config, EventLevel, Heartbeat, Hello, LogLine, Update } from "@pf-fleet/protocol";
 import type { EventView, JobView, LiveEvent, NodeLive } from "@pf-fleet/protocol/api";
 import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
-import type { AgentBundle, Arch } from "./bundle";
+import { type AgentBundle, type Arch, agentOutdated } from "./bundle";
 import type { Sealer } from "./crypto";
 import { type Db, schema } from "./db";
-import { olderThan } from "./versions";
 
 const { accounts, events, jobs, logs, nodes, samples, settings } = schema;
 /** Do not offer the same node an update more often than this (a failed install would loop). */
@@ -97,7 +96,8 @@ export class Hub {
     const version = this.bundle.version;
     const bin = this.bundle.binaries[conn.hello.arch as Arch];
     if (!version || !bin) return "unavailable";
-    if (!olderThan(conn.hello.agentVersion, version) && !opts.force) return "current";
+    const hello = conn.hello;
+    if (!opts.force && !agentOutdated(this.bundle, { version: hello.agentVersion, sha256: hello.sha256, arch: hello.arch })) return "current";
     const last = this.offered.get(nodeId);
     if (!opts.force && last && this.now() - last < UPDATE_COOLDOWN_MS) return "cooldown";
     this.offered.set(nodeId, this.now());
@@ -206,6 +206,7 @@ export class Hub {
             arch: msg.arch,
             cpus: msg.cpus,
             agentVersion: msg.agentVersion,
+            agentSha256: msg.sha256,
             lastSeenAt: now,
           })
           .where(eq(nodes.id, nodeId))

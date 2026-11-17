@@ -66,6 +66,7 @@ async fn run(dir: PathBuf) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     // resolved now: once an update replaces the file, /proc/self/exe points at a deleted inode
     let exe = std::env::current_exe()?;
+    let own_sha256 = std::fs::read(&exe).ok().map(|b| update::sha256_hex(&b));
     let agent = config::load_agent(&dir.join("agent.json"))?;
     let url = config::ws_url(&agent.server);
     eprintln!("pf-fleet-agent {VERSION}: dashboard {url}");
@@ -86,6 +87,7 @@ async fn run(dir: PathBuf) -> Result<()> {
             arch: std::env::consts::ARCH.into(),
             cpus: system::cpus(),
             active_jobs: vec![],
+            sha256: own_sha256.clone(),
         },
         active_jobs: active_jobs.clone(),
     };
@@ -128,7 +130,9 @@ async fn run(dir: PathBuf) -> Result<()> {
                 ConnEvent::Msg(ServerMsg::Config(cfg)) => sup.apply_config(cfg, true),
                 ConnEvent::Msg(ServerMsg::Command(cmd)) => sup.on_command(cmd),
                 ConnEvent::Msg(ServerMsg::Update(u)) => {
-                    if u.version == VERSION {
+                    // same version and same bytes: nothing to do. Same version but different
+                    // bytes (a dev build that reused a release number) does get replaced.
+                    if u.version == VERSION && own_sha256.as_deref() == Some(u.sha256.as_str()) {
                         eprintln!("pf-fleet-agent: already on {VERSION}; ignoring update");
                     } else {
                         sup.event(Level::Info, format!("receiving agent {} from the dashboard", u.version));

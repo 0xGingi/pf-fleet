@@ -1,5 +1,8 @@
 /**
  * Agent ↔ dashboard protocol v1. See docs/protocol.md.
+ *
+ * Compatibility rule: a field added after v0.1.0 must have a default here, so a dashboard keeps
+ * understanding agents that are one version behind while it updates them.
  * The Rust agent mirrors these in agent/src/protocol.rs; both sides test against protocol/fixtures.
  */
 import { z } from "zod";
@@ -37,8 +40,8 @@ export const LaneStatus = z.object({
   lastExit: z.number().int().nullable(),
   message: z.string().nullable(),
   job: ActiveJob.nullable(),
-  /** the pirateface version this lane's worker was started with (null: not running, or @latest) */
-  pfVersion: z.string().nullable(),
+  /** the pirateface version this lane's worker was started with (null: not running, or @latest). Added in 0.1.2. */
+  pfVersion: z.string().nullable().default(null),
 });
 export type LaneStatus = z.infer<typeof LaneStatus>;
 
@@ -65,6 +68,8 @@ export const Hello = z.object({
   arch: z.string(),
   cpus: z.number().int().positive(),
   activeJobs: z.array(z.string()),
+  /** SHA-256 of the agent's own binary, to tell builds with the same version apart. Added in 0.1.3. */
+  sha256: z.string().nullable().default(null),
 });
 
 export const Heartbeat = z.object({
@@ -74,8 +79,8 @@ export const Heartbeat = z.object({
   uvx: z.string().nullable(),
   processedBytes: bytes,
   lanes: z.array(LaneStatus),
-  /** a downloaded agent version waiting for the lanes to finish their jobs */
-  updatePending: z.string().nullable(),
+  /** a downloaded agent version waiting for the lanes to finish their jobs. Added in 0.1.1. */
+  updatePending: z.string().nullable().default(null),
 });
 
 export const JobStarted = z.object({

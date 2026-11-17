@@ -14,10 +14,9 @@ import { type Db, schema } from "./db";
 import type { Env } from "./env";
 import { type AgentSocket, type Hub, jobView, SAMPLE_BUCKET_MS } from "./hub";
 import { INSTALL_SH, installCommand } from "./install";
-import { ARCHES, type Arch } from "./bundle";
+import { ARCHES, type Arch, agentOutdated } from "./bundle";
 import { laneProblem } from "./lanes";
 import { DEFAULT_RETENTION_DAYS } from "./maintenance";
-import { olderThan } from "./versions";
 
 const { accounts, events, jobs, nodes, samples } = schema;
 
@@ -103,7 +102,7 @@ export function createApp(d: Deps) {
         arch: n.arch,
         cpus: n.cpus,
         agentVersion: n.agentVersion,
-        outdated: !!(n.agentVersion && bundle.version && olderThan(n.agentVersion, bundle.version)),
+        outdated: agentOutdated(bundle, { version: n.agentVersion, sha256: n.agentSha256, arch: n.arch }),
         lastSeenAt: n.lastSeenAt,
         createdAt: n.createdAt,
         live: hub.live(n.id),
@@ -177,7 +176,8 @@ export function createApp(d: Deps) {
             return;
           }
           if (!parsed.success) {
-            console.warn(`pf-fleet: node ${nodeId} sent an unreadable message: ${parsed.error.issues[0]?.message}`);
+            const issue = parsed.error.issues[0];
+            console.warn(`pf-fleet: node ${nodeId} sent an unreadable message: ${issue?.path.join(".") || "message"}: ${issue?.message}`);
             return;
           }
           hub.handle(nodeId, parsed.data).catch((err) => console.error(`pf-fleet: handling ${parsed.data.type} from ${nodeId}:`, err));

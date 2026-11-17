@@ -9,11 +9,15 @@ is `agent/src/protocol.rs` (serde). Both test against the same samples in
 `protocol/fixtures/*.json`, so a change to one side that the other cannot read
 fails a test. Change the fixtures first.
 
+Fields added after v0.1.0 get a default on the dashboard side, so a dashboard still
+understands agents one version behind while it updates them; it never drops their
+heartbeats over a field they do not know yet.
+
 ## Agent → dashboard
 
 | type | when | fields |
 |---|---|---|
-| `hello` | first frame after every connect | `agentVersion`, `hostname`, `os`, `kernel`, `arch`, `cpus`, `activeJobs` (job ids still running) |
+| `hello` | first frame after every connect | `agentVersion`, `hostname`, `os`, `kernel`, `arch`, `cpus`, `activeJobs` (job ids still running), `sha256` (of the agent's own binary) |
 | `heartbeat` | every 5 s | `ts`, `system` (`load1/5/15`, `memTotal`, `memAvailable`, `uptime`, `netRx`, `netTx`), `uvx` (path or null), `processedBytes` (monotonic counter since agent start), `lanes` (lane status list), `updatePending` (agent version installed and waiting for jobs to finish, or null) |
 | `job_started` | a lane leased a model and knows its size | `lane`, `jobId`, `repo`, `revision`, `files`, `sizeBytes`, `startedAt` |
 | `job_finished` | the job ended | `lane`, `jobId`, `result` (`listed` \| `already_listed` \| `refused` \| `error` \| `aborted`), `url?`, `infohash?`, `message?`, `finishedAt` |

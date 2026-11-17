@@ -20,3 +20,17 @@ describe("protocol fixtures (shared with the Rust agent)", () => {
     });
   }
 });
+
+describe("agents one version behind", () => {
+  // what a 0.1.1-era agent sends: no lane pfVersion, no updatePending, no hello sha256
+  test("their heartbeats and hellos are still accepted", () => {
+    const beat = JSON.parse(readFileSync(join(dir, "heartbeat.json"), "utf8"));
+    delete beat.updatePending;
+    for (const lane of beat.lanes) delete lane.pfVersion;
+    const parsed = AgentMessage.parse(beat);
+    expect(parsed.type === "heartbeat" && parsed.lanes[0]?.pfVersion).toBeNull();
+    const hello = JSON.parse(readFileSync(join(dir, "hello.json"), "utf8"));
+    delete hello.sha256;
+    expect(AgentMessage.parse(hello)).toMatchObject({ type: "hello", sha256: null });
+  });
+});

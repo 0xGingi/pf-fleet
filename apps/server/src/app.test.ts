@@ -103,7 +103,7 @@ describe("dashboard API", () => {
     const ws = { send: (d: string | Uint8Array) => sent.push(d), close: () => {} };
     const id = node.node.id;
     hub.attach(id, ws);
-    await hub.handle(id, { type: "hello", agentVersion: "0.1.0", hostname: "hermes", os: "Linux", kernel: "6", arch: "x86_64", cpus: 4, activeJobs: [] });
+    await hub.handle(id, { type: "hello", agentVersion: "0.1.0", hostname: "hermes", os: "Linux", kernel: "6", arch: "x86_64", cpus: 4, activeJobs: [], sha256: null });
     const cfg = JSON.parse(sent[0] as string) as Config;
     expect(cfg).toMatchObject({ type: "config", maxSizeGiB: 100, idleSec: 300, pirateKey: KEY });
     expect(cfg.lanes.map((l) => l.name)).toEqual(["h-1", "h-2"]);
@@ -139,7 +139,7 @@ describe("dashboard API", () => {
   test("a reconnect without a running job marks it aborted", async () => {
     const id = node.node.id;
     await hub.handle(id, { type: "job_started", lane: "h-2", jobId: "j2", repo: "c/d", revision: "", files: 1, sizeBytes: 1, startedAt: 2 });
-    await hub.handle(id, { type: "hello", agentVersion: "0.1.0", hostname: "hermes", os: "Linux", kernel: "6", arch: "x86_64", cpus: 4, activeJobs: [] });
+    await hub.handle(id, { type: "hello", agentVersion: "0.1.0", hostname: "hermes", os: "Linux", kernel: "6", arch: "x86_64", cpus: 4, activeJobs: [], sha256: null });
     const { rows } = await (await call("/api/jobs?result=aborted")).json();
     expect(rows.map((r: { id: string }) => r.id)).toEqual(["j2"]);
   });
@@ -214,5 +214,18 @@ describe("dashboard API", () => {
   test("history retention is a setting", async () => {
     expect((await json("PATCH", "/api/settings", { retentionDays: 3 })).status).toBe(400);
     expect((await (await json("PATCH", "/api/settings", { retentionDays: 30 })).json()).retentionDays).toBe(30);
+  });
+
+  test("a different build with the same version number gets the real one", async () => {
+    const id = node.node.id;
+    const sent: (string | Uint8Array)[] = [];
+    hub.kick(id, "test");
+    hub.attach(id, { send: (d: string | Uint8Array) => sent.push(d), close: () => {} });
+    tick(60 * 60_000); // past the update cooldown
+    const hello = { type: "hello" as const, agentVersion: "0.2.0", hostname: "hermes", os: "Linux", kernel: "6", arch: "x86_64", cpus: 4, activeJobs: [] };
+    await hub.handle(id, { ...hello, sha256: "0".repeat(64) });
+    expect(sent.some((d) => typeof d === "string" && d.includes('"type":"update"'))).toBe(true);
+    const views: NodeView[] = await (await call("/api/nodes")).json();
+    expect(views.find((n) => n.id === id)?.outdated).toBe(true);
   });
 });

@@ -1,1 +1,1 @@
-{"type":"hello","agentVersion":"0.1.0","hostname":"hermes","os":"AlmaLinux 10.1","kernel":"6.12.0","arch":"x86_64","cpus":8,"activeJobs":["3f1c2a90-5b7e-4c1d-9e0a-2b6f8d4c1e77"]}
+{"type":"hello","agentVersion":"0.1.0","hostname":"hermes","os":"AlmaLinux 10.1","kernel":"6.12.0","arch":"x86_64","cpus":8,"activeJobs":["3f1c2a90-5b7e-4c1d-9e0a-2b6f8d4c1e77"],"sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}

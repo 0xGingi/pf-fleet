@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-#   docker build -t pf-fleet .                      # version from agent/Cargo.toml
+#   docker build -t pf-fleet .                      # version "<agent/Cargo.toml>-dev"
 #   docker build --build-arg VERSION=1.2.3 .        # what CI does for a v1.2.3 tag
 #   docker build --target agent-binaries -o out .   # just the agent binaries
 #
@@ -21,7 +21,9 @@ COPY agent ./agent
 WORKDIR /src/agent
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/agent/target \
-    V="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}" \
+    # no VERSION (a local build): "<Cargo version>-dev", which sorts before that release, so a
+    # local build never passes for it and the real release still replaces it
+    V="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-dev}" \
  && export PF_FLEET_VERSION="$V" \
  && cargo test --release --locked \
  && cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl \

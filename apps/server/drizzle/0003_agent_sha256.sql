@@ -1,0 +1,1 @@
+ALTER TABLE `nodes` ADD `agent_sha256` text;

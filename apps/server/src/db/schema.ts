@@ -24,6 +24,7 @@ export const nodes = sqliteTable("nodes", {
   arch: text("arch"),
   cpus: integer("cpus"),
   agentVersion: text("agent_version"),
+  agentSha256: text("agent_sha256"),
   lastSeenAt: integer("last_seen_at"),
   createdAt: integer("created_at").notNull(),
 });

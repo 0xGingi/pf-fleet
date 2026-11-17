@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Bytes } from "./crypto";
+import { olderThan } from "./versions";
 
 export const ARCHES = ["x86_64", "aarch64"] as const;
 export type Arch = (typeof ARCHES)[number];
@@ -16,6 +17,17 @@ export interface AgentBinary {
 export interface AgentBundle {
   version: string | null;
   binaries: Partial<Record<Arch, AgentBinary>>;
+}
+
+/**
+ * Whether an agent should get this bundle's agent: it is older, or it claims the same version
+ * but is a different build (a local or dev build that reused a release number).
+ */
+export function agentOutdated(bundle: AgentBundle, agent: { version: string | null; sha256: string | null; arch: string | null }): boolean {
+  if (!agent.version || !bundle.version) return false;
+  if (olderThan(agent.version, bundle.version)) return true;
+  const bin = bundle.binaries[agent.arch as Arch];
+  return agent.version === bundle.version && !!agent.sha256 && !!bin && agent.sha256 !== bin.sha256;
 }
 
 export function loadBundle(dir: string): AgentBundle {

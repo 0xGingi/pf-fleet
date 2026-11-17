@@ -36,7 +36,8 @@ docker compose up -d
 ```
 
 This runs the released image `ghcr.io/0xgingi/pf-fleet` (amd64 and arm64). From a
-clone, `docker compose up -d --build` builds it locally instead.
+clone, `docker compose up -d --build` builds it locally instead; local builds are
+versioned `<next>-dev`, so the next release replaces their agents automatically.
 
 Open `http://<host>:1337` and sign in. Put it behind your reverse proxy with TLS
 (and set `TRUST_PROXY=1`), or keep it on a private network such as Tailscale. The

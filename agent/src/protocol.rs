@@ -42,6 +42,8 @@ pub struct Hello {
     pub arch: String,
     pub cpus: u32,
     pub active_jobs: Vec<String>,
+    /// SHA-256 of this agent's binary, so the dashboard can tell same-version builds apart
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -4,6 +4,26 @@ What changed in each pf-fleet release, in plain words. To update, run
 `docker compose pull && docker compose up -d` on your dashboard. Your nodes update
 their agents on their own, after they finish whatever they're working on.
 
+## 0.1.3
+
+The "my lanes say starting forever" fix.
+
+**Older agents work with a newer dashboard again.** If your nodes ran an agent
+from before 0.1.2, the 0.1.2 dashboard ignored their status updates over a field
+they didn't know about yet. Lanes looked stuck on "starting" and the event log
+stayed empty. The dashboard now accepts agents that are a version behind, and if
+it ever can't read something, its log says exactly which field.
+
+**Look-alike builds get replaced.** A build of the dashboard made straight from
+the code could hand out an agent with the same version number as a real release,
+and then nothing would ever update it. Agents now report a fingerprint of their
+own binary, so the dashboard spots a different build with the same number and
+swaps in the real one. Local builds are also labelled `-dev` now, so they never
+pretend to be a release.
+
+If your lanes were stuck: update the dashboard and give the nodes a minute. They
+update to 0.1.3 on their own.
+
 ## 0.1.2
 
 The "set it and forget it" release.
