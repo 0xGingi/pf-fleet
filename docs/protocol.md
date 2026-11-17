@@ -75,6 +75,7 @@ binary) takes the same path from step 3: finish jobs, then exec the binary on di
 
 Pirate Face holds a lease for 10 minutes after its last renewal and pf cannot release
 or resume one. A lane whose worker died mid-job waits 10.5 minutes before starting
-again; an unexpected `409 ... already hold lease` is rechecked every 60 s without
-backoff. Leases still held at shutdown are written to `leases.json` and honoured by
-the next agent process.
+again, and so does a lane refused with an unexpected `409 ... already hold lease` (no
+exponential backoff; checking more often kept such leases held for over 30 minutes).
+Leases still held at shutdown are written to `leases.json` and honoured by the next
+agent process.

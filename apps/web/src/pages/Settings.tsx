@@ -51,7 +51,7 @@ export function Settings() {
           <CardBody className="space-y-4">
             <Toggle
               title="Update agents automatically"
-              description="When a node connects with an older agent, send it this dashboard's agent. It installs after every lane finishes its current job, so no work is lost."
+              description="When a node connects with an older agent, send it this dashboard's agent. It installs after every lane finishes its current job, so no work is lost. Only releases go out automatically: on an edge or development build, use Update agent on a node."
               checked={s.autoUpdateAgents}
               disabled={save.isPending}
               onChange={(v) => set({ autoUpdateAgents: v }, v ? "Outdated agents were sent the new agent" : "Automatic agent updates are off")}

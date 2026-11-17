@@ -4,7 +4,8 @@
 
 use crate::parser::{parse, Ev};
 use crate::protocol::{
-    ActiveJob, AgentMsg, JobFinished, JobResult, JobStarted, LaneState, LaneStatus, LogLine,
+    ActiveJob, AgentEvent, AgentMsg, JobFinished, JobResult, JobStarted, LaneState, LaneStatus,
+    Level, LogLine,
 };
 use std::time::Duration;
 use tokio::time::Instant;
@@ -14,11 +15,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(300);
 /// A worker that ran this long before dying resets the backoff.
 const HEALTHY_RUN: Duration = Duration::from_secs(600);
 /// Pirate Face keeps a lease for 10 minutes after its last renewal and pf cannot release
-/// it, so a lane whose worker died mid-job must wait this long before leasing again.
+/// it, so a lane whose worker died mid-job (or that was refused with "already hold lease")
+/// waits this long before leasing again.
 pub const LEASE_LAPSE_MS: u64 = 10 * 60_000 + 30_000;
-/// A refused lease we did not see coming (e.g. the agent itself was restarted mid-job):
-/// check again this often instead of backing off exponentially.
-const LEASE_RECHECK_MS: u64 = 60_000;
 pub const LEASE_WAIT_MESSAGE: &str =
     "waiting for the previous worker's Pirate Face lease to lapse (up to 10 minutes)";
 
@@ -73,6 +72,8 @@ pub struct Lane {
     pub restart_pending: bool,
     /// wall-clock ms until which Pirate Face may still hold this lane's lease from a killed worker
     pub lease_free_ms: Option<u64>,
+    /// the model Pirate Face last refused from this lane as "already been submitted"
+    refused_repo: Option<String>,
     /// pirateface version the lane's worker was last started with (None: @latest)
     pub pf_version: Option<String>,
     pub job: Option<Job>,
@@ -95,6 +96,7 @@ impl Lane {
             next_start: None,
             restart_pending: false,
             lease_free_ms: None,
+            refused_repo: None,
             pf_version: None,
             job: None,
             logs: Vec::new(),
@@ -113,6 +115,17 @@ impl Lane {
                 now_ms,
                 fx,
             );
+        }
+        if self.refused_repo.as_deref() == Some(repo.as_str()) {
+            // Pirate Face re-queues a model it refuses as already submitted: the lane can loop on it
+            fx.msgs.push(AgentMsg::Event(AgentEvent {
+                ts: now_ms,
+                level: Level::Warn,
+                text: format!(
+                    "lane {} was handed {repo} again, which Pirate Face already refused as \"already been submitted\"; it will likely be refused again",
+                    self.name
+                ),
+            }));
         }
         self.job = Some(Job {
             id: uuid::Uuid::new_v4().to_string(),
@@ -265,6 +278,9 @@ impl Lane {
                 &mut fx,
             ),
             Ev::NotListed(msg) => {
+                if msg.contains("already been submitted") {
+                    self.refused_repo = self.job.as_ref().map(|j| j.repo.clone());
+                }
                 self.finish(JobResult::Refused, None, None, Some(msg), now_ms, &mut fx)
             }
             Ev::Error(msg) => {
@@ -321,9 +337,10 @@ impl Lane {
             .as_deref()
             .is_some_and(|m| m.contains("already hold lease"))
         {
-            // a lease from an earlier worker we did not track (the agent restarted mid-job);
-            // not a failure of this worker, so no exponential backoff
-            self.lease_free_ms = Some(now_ms + LEASE_RECHECK_MS);
+            // Pirate Face still holds a lease for this lane (the agent restarted mid-job, or it
+            // kept the lease of a refused job). Wait it out in one go, with no exponential backoff:
+            // checking every minute kept such a lease held for 30+ minutes.
+            self.lease_free_ms = Some(now_ms + LEASE_LAPSE_MS);
             self.next_start = None;
             self.state = LaneState::Backoff;
         } else {
@@ -504,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_stale_lease_rechecks_without_backoff() {
+    fn a_refused_stale_lease_waits_it_out_without_backoff() {
         let mut l = running("w1");
         feed(
             &mut l,
@@ -513,8 +530,27 @@ mod tests {
         l.on_exit(Some(1), 5_000, Instant::now());
         assert_eq!(l.state, LaneState::Backoff);
         assert_eq!(l.restarts, 0);
-        assert!(l.lease_blocked(5_000 + LEASE_RECHECK_MS - 1));
-        assert!(!l.lease_blocked(5_000 + LEASE_RECHECK_MS));
+        assert!(l.lease_blocked(5_000 + LEASE_LAPSE_MS - 1));
+        assert!(!l.lease_blocked(5_000 + LEASE_LAPSE_MS));
+    }
+
+    #[test]
+    fn a_model_refused_as_submitted_is_flagged_when_it_comes_back() {
+        let mut l = running("w1");
+        feed(&mut l, JOB);
+        feed(
+            &mut l,
+            &["    Not listed (409): This torrent and revision have already been submitted."],
+        );
+        let fx = feed(&mut l, JOB);
+        assert!(fx.msgs.iter().any(
+            |m| matches!(m, AgentMsg::Event(e) if e.level == Level::Warn && e.text.contains("a/b"))
+        ));
+        let mut other = running("w2");
+        assert!(!feed(&mut other, JOB)
+            .msgs
+            .iter()
+            .any(|m| matches!(m, AgentMsg::Event(_))));
     }
 
     #[test]

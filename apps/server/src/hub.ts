@@ -67,6 +67,11 @@ export class Hub {
     return this.getSetting("autoUpdateAgents", true);
   }
 
+  /** Auto-update only hands out releases: an edge or dev build ("0.1.4-edge.12") goes out by "Update agent" alone. */
+  private autoUpdatesNow(): boolean {
+    return this.autoUpdate() && !this.bundle.version?.includes("-");
+  }
+
   followPirateface(): boolean {
     return this.getSetting("followPirateface", true);
   }
@@ -109,6 +114,7 @@ export class Hub {
 
   /** Offer every connected, outdated agent the update (after their current jobs). */
   updateOutdated(): number {
+    if (!this.autoUpdatesNow()) return 0;
     let n = 0;
     for (const id of this.conns.keys()) if (this.offerUpdate(id, { graceful: true }) === "sent") n++;
     return n;
@@ -226,7 +232,7 @@ export class Hub {
           .all();
         for (const { id } of stale) this.emitJob(id);
         await this.sendConfig(nodeId);
-        if (this.autoUpdate()) this.offerUpdate(nodeId, { graceful: true });
+        if (this.autoUpdatesNow()) this.offerUpdate(nodeId, { graceful: true });
         this.emit({ type: "nodes" });
         break;
       }

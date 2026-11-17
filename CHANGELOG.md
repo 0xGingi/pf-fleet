@@ -4,13 +4,28 @@ What changed in each pf-fleet release, in plain words. To update, run
 `docker compose pull && docker compose up -d` on your dashboard. Your nodes update
 their agents on their own, after they finish whatever they're working on.
 
-## 0.1.4 (not released yet)
+## 0.1.4
 
 **Dressed like Pirate Face.** The dashboard now matches pirateface.co: the pirate
 logo, a blackletter "Fleet", Pirate Face's dark navy and copper colours and its fonts.
 Navigation moved to a top bar, the numbers are bigger and easier to read, and the
 overview puts recent jobs full width so no column gets cut off. It also works better
 on a phone. Light mode follows your system setting.
+
+**Stuck leases clear faster.** Sometimes Pirate Face refuses a finished model as
+"already been submitted" but keeps holding the lane's lease. The agent used to ask
+again every minute, which seemed to keep the lease alive for half an hour or more.
+Now it waits the 10 minutes out in one go, and you get one event per wait instead
+of one a minute.
+
+**Heads-up when a lane is going in circles.** Pirate Face sometimes hands a lane the
+same model it just refused as "already submitted". The node's event log now warns
+you when that happens, so you know why a lane keeps getting nowhere.
+
+**Edge builds stay on the dashboard.** If you run the `edge` dashboard image, it no
+longer pushes its agent to your nodes on its own. Only real releases go out
+automatically. The "Update agent" button still works if you want an edge agent on a
+node.
 
 ## 0.1.3
 
