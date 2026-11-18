@@ -1,6 +1,6 @@
 [package]
 name = "pf-fleet-agent"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Runs Pirate Face `pf work` lanes on a node and reports to the pf-fleet dashboard"
 publish = false
