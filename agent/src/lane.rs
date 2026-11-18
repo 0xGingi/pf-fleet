@@ -77,6 +77,8 @@ pub struct Lane {
     /// pirateface version the lane's worker was last started with (None: @latest)
     pub pf_version: Option<String>,
     pub job: Option<Job>,
+    /// revision, files, size printed before their `leased` line (pf 0.2.26+ prints the lease last)
+    header: (String, u32, u64),
     pub logs: Vec<LogLine>,
 }
 
@@ -99,6 +101,7 @@ impl Lane {
             refused_repo: None,
             pf_version: None,
             job: None,
+            header: Default::default(),
             logs: Vec::new(),
         }
     }
@@ -127,12 +130,13 @@ impl Lane {
                 ),
             }));
         }
+        let (revision, files, size_bytes) = std::mem::take(&mut self.header);
         self.job = Some(Job {
             id: uuid::Uuid::new_v4().to_string(),
             repo,
-            revision: String::new(),
-            files: 0,
-            size_bytes: 0,
+            revision,
+            files,
+            size_bytes,
             done_bytes: 0,
             started_ms: now_ms,
             rate_bps: 0.0,
@@ -202,7 +206,12 @@ impl Lane {
     pub fn on_line(&mut self, text: &str, now_ms: u64, now: Instant) -> Effects {
         let mut fx = Effects::default();
         match parse(text) {
-            Ev::Leased(repo) => self.new_job(repo, now_ms, &mut fx),
+            Ev::Leased(repo) => {
+                self.new_job(repo, now_ms, &mut fx);
+                if self.job.as_ref().is_some_and(|j| j.size_bytes > 0) {
+                    self.announce(&mut fx);
+                }
+            }
             Ev::LeasedAll {
                 repo,
                 revision,
@@ -215,22 +224,21 @@ impl Lane {
                 }
                 self.announce(&mut fx);
             }
-            Ev::Revision(r) => {
-                if let Some(j) = self.job.as_mut() {
-                    j.revision = r;
-                }
-            }
-            Ev::Files(n) => {
-                if let Some(j) = self.job.as_mut() {
-                    j.files = n;
-                }
-            }
-            Ev::SizeGb(g) => {
-                if let Some(j) = self.job.as_mut() {
+            Ev::Revision(r) => match self.job.as_mut() {
+                Some(j) => j.revision = r,
+                None => self.header.0 = r,
+            },
+            Ev::Files(n) => match self.job.as_mut() {
+                Some(j) => j.files = n,
+                None => self.header.1 = n,
+            },
+            Ev::SizeGb(g) => match self.job.as_mut() {
+                Some(j) => {
                     j.size_bytes = (g * 1e9) as u64;
+                    self.announce(&mut fx);
                 }
-                self.announce(&mut fx);
-            }
+                None => self.header.2 = (g * 1e9) as u64,
+            },
             Ev::Progress { done_gb, total_gb } => {
                 if self.job.is_none() {
                     self.new_job("(unknown)".into(), now_ms, &mut fx);
@@ -449,6 +457,29 @@ mod tests {
         assert_eq!(f.job_id, s.job_id);
         assert!(l.job.is_none());
         assert_eq!(l.state, LaneState::Idle);
+    }
+
+    #[test]
+    fn pf_0_2_26_prints_the_header_before_the_lease_and_a_terminal_bar() {
+        let mut l = running("w1");
+        let fx = feed(
+            &mut l,
+            &[
+                "    revision  1dbe8ad5e13e",
+                "    files     67",
+                "    size      88.73 GB",
+                "    leased    a/b",
+                " 4%|▍         | 3.50G/88.7G [00:35<14:12, 100MB/s]",
+            ],
+        );
+        let [AgentMsg::JobStarted(s)] = &fx.msgs[..] else {
+            panic!("{:?}", fx.msgs)
+        };
+        assert_eq!(
+            (s.repo.as_str(), s.revision.as_str(), s.files, s.size_bytes),
+            ("a/b", "1dbe8ad5e13e", 67, 88_730_000_000)
+        );
+        assert_eq!(fx.processed, 3_500_000_000);
     }
 
     #[test]

@@ -4,6 +4,14 @@ What changed in each pf-fleet release, in plain words. To update, run
 `docker compose pull && docker compose up -d` on your dashboard. Your nodes update
 their agents on their own, after they finish whatever they're working on.
 
+## 0.1.5
+
+**Progress is back with pirateface 0.2.26.** pirateface 0.2.26 stopped printing its
+progress as text, so lanes showed "working" with no size, no progress and no speed.
+The agent now gives pf a terminal to draw its progress bar on and reads the bar,
+so lanes show progress, speed and ETA again, and the model's size and file count
+appear the moment it's leased. The bar itself stays out of the worker logs.
+
 ## 0.1.4
 
 **Dressed like Pirate Face.** The dashboard now matches pirateface.co: the pirate

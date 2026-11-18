@@ -8,12 +8,13 @@ use crate::parser::clean;
 use crate::protocol::*;
 use crate::system;
 use std::collections::{BTreeMap, HashMap};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 
@@ -27,6 +28,8 @@ pub enum ProcEv {
         gen: u64,
         stream: Stream,
         text: String,
+        /// a progress-bar redraw: parsed for progress, kept out of the logs
+        frame: bool,
     },
     Exit {
         lane: String,
@@ -364,8 +367,19 @@ impl Supervisor {
             .env("UV_CONCURRENT_DOWNLOADS", "4")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .process_group(0);
+        // pf 0.2.26+ draws its byte progress only on a terminal, so stderr gets one
+        let pty_master = match pty() {
+            Ok((master, slave)) => {
+                cmd.stderr(slave);
+                Some(master)
+            }
+            Err(e) => {
+                self.agent_log(name, format!("no terminal for pf, so no progress: {e}"));
+                cmd.stderr(Stdio::piped());
+                None
+            }
+        };
         let lane = self.lanes.get_mut(name).expect("caller checked");
         match cmd.spawn() {
             Err(e) => {
@@ -387,13 +401,15 @@ impl Supervisor {
                 lane.message = None;
                 lane.pf_version = pf_version.clone();
                 lane.next_start = None;
-                let (stdout, stderr) = (
-                    child.stdout.take().expect("piped"),
-                    child.stderr.take().expect("piped"),
-                );
+                let stdout = child.stdout.take().expect("piped");
+                let stderr: Box<dyn AsyncRead + Send + Unpin> = match pty_master {
+                    Some(m) => Box::new(tokio::fs::File::from_std(m)),
+                    None => Box::new(child.stderr.take().expect("piped")),
+                };
+                drop(cmd); // closes our copy of the terminal, so its reader ends when pf does
                 let (tx, lane_name) = (self.ev_tx.clone(), name.to_string());
                 tokio::spawn(async move {
-                    // read both pipes to EOF before reporting the exit, so the last lines
+                    // read both to EOF before reporting the exit, so the last lines
                     // (usually the reason it died) arrive before the Exit event
                     tokio::join!(
                         pump(stdout, Stream::Out, &lane_name, gen, &tx),
@@ -458,6 +474,7 @@ impl Supervisor {
                 gen,
                 stream,
                 text,
+                frame,
             } => {
                 let text = clean(&text);
                 let Some(l) = self.lanes.get_mut(&lane) else {
@@ -466,13 +483,15 @@ impl Supervisor {
                 if l.proc.as_ref().map(|p| p.gen) != Some(gen) || text.is_empty() {
                     return;
                 }
-                eprintln!("[{lane}] {text}");
                 let fx = l.on_line(&text, now_ms(), Instant::now());
-                l.logs.push(LogLine {
-                    ts: now_ms(),
-                    stream,
-                    text,
-                });
+                if !frame {
+                    eprintln!("[{lane}] {text}");
+                    l.logs.push(LogLine {
+                        ts: now_ms(),
+                        stream,
+                        text,
+                    });
+                }
                 self.processed += fx.processed;
                 let restart = l.enabled;
                 for m in fx.msgs {
@@ -631,6 +650,7 @@ impl Supervisor {
     }
 }
 
+/// Sends each line, and each progress-bar redraw (text ended by `\r`, at most one per 2 s).
 async fn pump<R: AsyncRead + Unpin>(
     r: R,
     stream: Stream,
@@ -639,22 +659,83 @@ async fn pump<R: AsyncRead + Unpin>(
     tx: &UnboundedSender<ProcEv>,
 ) {
     let mut reader = BufReader::new(r);
-    let mut buf = Vec::new();
+    let (mut buf, mut byte) = (Vec::new(), [0u8]);
+    let mut last_frame: Option<Instant> = None;
     loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(0) | Err(_) => return,
+        // ponytail: byte at a time through the BufReader; pf writes a few lines a second
+        let end = match reader.read(&mut byte).await {
+            Ok(0) | Err(_) => return, // a terminal reports EIO once pf closes it
+            Ok(_) if byte[0] == b'\n' || byte[0] == b'\r' => byte[0],
             Ok(_) => {
-                let text = String::from_utf8_lossy(&buf).into_owned();
-                let _ = tx.send(ProcEv::Line {
-                    lane: lane.to_string(),
-                    gen,
-                    stream,
-                    text,
-                });
+                buf.push(byte[0]);
+                continue;
             }
+        };
+        if buf.is_empty() {
+            continue;
+        }
+        let frame = end == b'\r';
+        if frame {
+            if last_frame.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+                buf.clear();
+                continue;
+            }
+            last_frame = Some(Instant::now());
+        }
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        buf.clear();
+        let _ = tx.send(ProcEv::Line {
+            lane: lane.to_string(),
+            gen,
+            stream,
+            text,
+            frame,
+        });
+    }
+}
+
+/// A terminal for pf's stderr: raw (no `\r\n`), 120 columns (tqdm draws nothing at width 0),
+/// close-on-exec so other lanes' workers never inherit it and keep it open.
+fn pty() -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let (mut master, mut slave) = (0, 0);
+    let size = libc::winsize {
+        ws_row: 40,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty fills in two new fds; null name and termios mean "don't care"/defaults
+    if unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &size,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both fds were just opened and are owned by nothing else
+    let (master, slave) = unsafe {
+        (
+            std::fs::File::from_raw_fd(master),
+            std::fs::File::from_raw_fd(slave),
+        )
+    };
+    // SAFETY: plain fcntl/termios calls on fds we own; termios is fully written by tcgetattr
+    unsafe {
+        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(slave.as_raw_fd(), &mut t) == 0 {
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &t);
         }
     }
+    Ok((master, slave))
 }
 
 /// Versions go on a command line as `pirateface==<v>`: allow only what PyPI versions use.
@@ -667,7 +748,35 @@ fn valid_version(v: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_version;
+    use super::{pty, pump, valid_version, ProcEv, Stream};
+
+    #[tokio::test]
+    async fn pf_sees_a_wide_raw_terminal_and_its_bar_comes_through() {
+        let (master, slave) = pty().expect("openpty");
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", r#"test -t 2 && stty size <&2 >&2; printf ' 7%%|x | 1.70G/24.5G [00:01]\rdone\n' >&2"#])
+            .stderr(slave)
+            .spawn()
+            .expect("sh");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let read = pump(tokio::fs::File::from_std(master), Stream::Err, "w1", 1, &tx);
+        tokio::time::timeout(std::time::Duration::from_secs(10), read)
+            .await
+            .expect("the reader ends once sh exits");
+        child.wait().await.unwrap();
+        let mut got = Vec::new();
+        while let Ok(ProcEv::Line { text, frame, .. }) = rx.try_recv() {
+            got.push((text, frame));
+        }
+        assert_eq!(
+            got,
+            [
+                ("40 120".to_string(), false),
+                (" 7%|x | 1.70G/24.5G [00:01]".to_string(), true),
+                ("done".to_string(), false),
+            ]
+        );
+    }
 
     #[test]
     fn versions_for_the_command_line() {

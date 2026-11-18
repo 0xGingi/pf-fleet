@@ -16,7 +16,7 @@ pub enum Ev {
         files: u32,
         gb: f64,
     },
-    /// `18.3 of 88.7 GB`
+    /// `18.3 of 88.7 GB`, or pf 0.2.26+'s terminal bar ` 35%|███▌  | 8.50G/24.5G [01:23<02:40, 102MB/s]`
     Progress {
         done_gb: f64,
         total_gb: f64,
@@ -63,6 +63,16 @@ fn gb(s: &str) -> Option<f64> {
     s.trim().strip_suffix("GB")?.trim().parse().ok()
 }
 
+/// tqdm's decimal sizes: `512`, `1.70G`, `24.5G`, `1.02T` -> GB
+fn si_gb(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (num, exp) = match s.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (&s[..i], "kMGTP".find(c)? as i32 + 1),
+        _ => (s, 0),
+    };
+    Some(num.parse::<f64>().ok()? * 1e3f64.powi(exp) / 1e9)
+}
+
 pub fn parse(line: &str) -> Ev {
     let t = line.trim();
     if let Some(v) = field(t, "leased") {
@@ -105,6 +115,16 @@ pub fn parse(line: &str) -> Ev {
                 done_gb: d,
                 total_gb: tot,
             };
+        }
+    }
+    if let Some((_, rest)) = t.rsplit_once("| ") {
+        if let Some((done, total)) = rest.split_once(" [").and_then(|(c, _)| c.split_once('/')) {
+            if let (Some(d), Some(tot)) = (si_gb(done), si_gb(total)) {
+                return Ev::Progress {
+                    done_gb: d,
+                    total_gb: tot,
+                };
+            }
         }
     }
     if let Some(rest) = t.strip_prefix("Already listed:") {
@@ -160,6 +180,25 @@ mod tests {
             Ev::Listed("https://pirateface.co/a/b".into())
         );
         assert_eq!(parse("    infohash  abc123"), Ev::Infohash("abc123".into()));
+    }
+
+    #[test]
+    fn terminal_bar() {
+        assert_eq!(
+            parse(" 35%|███▌      | 8.50G/24.5G [01:23<02:40, 102MB/s]"),
+            Ev::Progress {
+                done_gb: 8.5,
+                total_gb: 24.5
+            }
+        );
+        assert_eq!(
+            parse("  0%|          | 0.00/1.02T [00:00<?, ?B/s]"),
+            Ev::Progress {
+                done_gb: 0.0,
+                total_gb: 1020.0
+            }
+        );
+        assert_eq!(parse("a | b [c]"), Ev::Other);
     }
 
     #[test]
