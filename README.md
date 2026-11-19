@@ -1,200 +1,159 @@
 # pf-fleet
 
-Run [Pirate Face](https://pirateface.co) `pf work` lanes on many machines and manage
-them from one web dashboard.
+Run [Pirate Face](https://pirateface.co) `pf work` lanes across multiple machines and manage them from one web dashboard.
 
-- **Agent** (Rust, one static ~2 MB binary per CPU type) runs on each machine as a
-  systemd service. It starts `uvx --from pirateface@latest pf work --name <lane>`
-  for every enabled lane, restarts crashed workers with backoff, reads their output,
-  and reports status, jobs, logs and host stats to the dashboard.
-- **Dashboard** (Bun + Hono + SQLite, React UI) runs in Docker. You add nodes,
-  pick lanes, set each Pirate Face account's key, restart workers, and watch
-  throughput, jobs and live worker output.
+## How it works
 
-```
- machine A                    machine B                      your server
-┌───────────────────┐        ┌───────────────────┐         ┌──────────────────────┐
-│ pf-fleet-agent    │        │ pf-fleet-agent    │  wss    │ dashboard (docker)   │
-│  ├ pf work lane-1 │───────▶│  ├ pf work lane-1 │────────▶│  Hono API + SSE      │
-│  └ pf work lane-2 │  wss   │  …                │         │  SQLite (/data)      │
-└───────────────────┘        └───────────────────┘         │  React UI            │
-         └─────────────────────────────────────────────────▶└──────────────────────┘
-```
+- **Dashboard** — Runs in Docker on your server (or over a private network like Tailscale). From the web UI, you add your Pirate Face accounts, register machines, turn lanes on or off, and watch live progress, throughput, and logs.
+- **Agent** — A small static Linux binary installed on each worker machine with a one-line command. It manages your `pf work` processes, streams their progress and output back to the dashboard, and restarts them cleanly when updates arrive.
 
-Agents connect **out** to the dashboard, so nodes behind NAT work and the dashboard
-never needs SSH access. If the dashboard is down, agents keep running their last
-config and send what they missed when it comes back.
+Agents connect **outward** to the dashboard over WebSockets, so worker machines behind NAT or on shared seedboxes work out of the box and the dashboard never needs SSH access. If the dashboard goes offline, agents keep running their lanes and send missed job history once it comes back.
 
-## Run the dashboard
+---
+
+## Quick start
+
+### 1. Start the dashboard
+
+Download the Compose file and example config:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/0xGingi/pf-fleet/main/docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/0xGingi/pf-fleet/main/.env.example -o .env
-# set PUBLIC_URL (an address your machines can reach), ADMIN_PASSWORD and
-# APP_SECRET (openssl rand -hex 32)
+```
+
+Open `.env` and set three values:
+
+- `PUBLIC_URL` — The address your worker machines will use to reach the dashboard (for example, `https://fleet.example.com` or `http://my-server.tailnet:1337`).
+- `ADMIN_PASSWORD` — The password you'll use to sign in.
+- `APP_SECRET` — A random secret used to encrypt your Pirate Face keys in the database. Generate one with `openssl rand -hex 32`.
+
+Start the container:
+
+```sh
 docker compose up -d
 ```
 
-This runs the released image `ghcr.io/0xgingi/pf-fleet` (amd64 and arm64). From a
-clone, `docker compose up -d --build` builds it locally instead; local builds are
-versioned `<next>-dev`, so the next release replaces their agents automatically.
+Open `http://<your-host>:1337` and sign in (default username is `admin`).
 
-Open `http://<host>:1337` and sign in. Put it behind your reverse proxy with TLS
-(and set `TRUST_PROXY=1`), or keep it on a private network such as Tailscale. The
-dashboard can start and stop workers on every node, so do not expose it without TLS.
+> **Security note:** Because the dashboard can start and stop workers on your machines, don't expose it to the public internet over plain HTTP. Put it behind a reverse proxy with HTTPS (and set `TRUST_PROXY=1` in `.env`), or keep it on a private network like Tailscale.
 
-## Add a machine
+### 2. Add your Pirate Face account
 
-1. **Accounts → Add account.** Paste the community torrent key from
-   pirateface.co/settings (`pfct_…`). It is stored encrypted with `APP_SECRET` and
-   only sent to that account's agents.
-2. **Nodes → Add node.** Copy the install command it shows (the token in it is
-   shown once) and run it on the machine as the user that should run the workers:
+1. Copy your community torrent key (`pfct_…`) from [pirateface.co/settings](https://pirateface.co/settings).
+2. In the dashboard, go to **Accounts → Add account** and paste the key.
+
+### 3. Add a worker machine
+
+1. Go to **Nodes → Add node**, give the machine a name, and pick which account it belongs to.
+2. Copy the install command shown (its token is only displayed once) and run it on your worker machine as the user that should run `pf work`:
 
    ```sh
    curl -fsSL https://fleet.example.com/install.sh | sh -s -- --server https://fleet.example.com --token <nodeId>.<secret>
    ```
 
-   It installs uv if missing, the agent in `~/.local/bin` (or `/usr/local/bin`
-   as root), and a systemd service: a user service with lingering for normal
-   users, a system service for root. Without systemd it prints a `nohup` line.
-3. On the node's page, **add lanes**. Each lane is one `pf work --name <lane>`.
+   The script installs `uv` if needed, puts `pf-fleet-agent` in `~/.local/bin` (or `/usr/local/bin` when run as root), and sets up a systemd service so it starts automatically on boot. On systems without systemd, it prints a `nohup` command you can use instead.
+3. Once the node appears online in the dashboard, open it and **add lanes**. Each lane runs one `pf work --name <lane>` worker.
 
-### Pirate Face rules the dashboard enforces
+The dashboard automatically enforces Pirate Face's rules:
+- Each account can run at most **3 active lanes** at a time across all machines.
+- Lane names must be **unique per account** (1–24 characters: letters, numbers, `.`, `_`, `-`).
 
-- One account runs at most **3 lanes at once**, across all machines.
-- Lane names must be **unique per account** (the queue leases jobs per lane name).
-- Lane names are 1–24 letters, digits, `.`, `_`, `-` (pf's rule).
+---
 
-## Day to day
+## Everyday use
 
-| You want to | Do |
-|---|---|
-| Stop a lane | Switch it off. If it is mid-model you choose **stop after this job** or **stop now** (the lease lapses and the model goes back to the queue). |
-| Pick up a new pirateface release | **Restart all** on the node. Workers restart after their current job; `pirateface@latest` resolves the newest version. |
-| Limit model size on a slow box | Node settings → *Largest model (GiB)* (`pf work --max-size`). |
-| Change an account's key | Accounts → edit. Every node on that account restarts its lanes after their current jobs. |
-| Upgrade everything | `docker compose pull && docker compose up -d`. The new dashboard carries the matching agent and pushes it to your nodes (see below). |
-| Move a node to another machine | **New install command**, run it on the new machine. The old agent is disconnected. |
+### Stopping and restarting lanes
+When you switch off or restart a lane that's currently verifying a model, you can choose:
+- **Stop after this job** *(recommended)* — Lets the worker finish submitting the current model before stopping.
+- **Stop now** — Kills the worker immediately. Because `pf work` streams models in memory and can't resume, any progress on that model is lost. Pirate Face also holds the interrupted lease for up to 10 minutes; if you start the lane again right away, the agent will wait out the remaining lease before requesting new work.
 
-## pirateface releases
+### Limiting model size on slower machines
+To keep a machine with slow bandwidth or tight limits from picking up huge models, open the node page and set **Largest model (GiB)** under node settings (passes `--max-size` to `pf work`).
 
-The dashboard checks PyPI every 30 minutes and pins every lane to the newest
-`pirateface` (`--from pirateface==<version>`). When a release comes out, each lane
-restarts into it after its current job, so no worker keeps running an old pf until
-it crashes. **Settings → pirateface** shows the version and a *Check now* button;
-turning *Follow new releases* off goes back to `pirateface@latest` at each start.
+### Moving a node to another machine
+On the node's page, click **New install command** and run the new command on the replacement machine. The old agent is disconnected automatically and your lane configuration stays intact.
 
-## Alerts and events
+### Automatic updates
 
-**Settings → Alerts** takes a webhook URL (Discord, Slack, or anything that accepts
-a JSON POST; the body has `content`, `text`, `kind`, `node`, `lane`, `message`).
-It fires when:
+- **`pirateface` releases:** The dashboard checks PyPI every 30 minutes. When a new version of `pirateface` is published, every active lane switches to it automatically after finishing its current job. You can check the active version or trigger an immediate check under **Settings → pirateface**.
+- **Dashboard & agents:** To update `pf-fleet` itself, pull the latest image on your dashboard server:
 
-- a node has been offline for 2 minutes (and again when it is back),
-- a lane has kept crashing or erroring for 10 minutes (and when it recovers;
-  waiting out a lease does not count),
-- Pirate Face refuses a submission or a job ends in an error,
-- an agent reports an error (uv missing, no key, a failed self-update).
+  ```sh
+  docker compose pull && docker compose up -d
+  ```
 
-Every node also has an **event log** (node page, and *Recent events* on the
-overview): agent starts, connection drops and how long they lasted, updates,
-worker crashes and lease waits. Worker output and events are stored in SQLite, so
-they survive dashboard restarts. **Settings → History** sets how long jobs, events
-and throughput are kept (180 days by default); worker output keeps the last 1000
-lines per lane.
+  Each dashboard release bundles the matching agent binary. After the dashboard updates, connected nodes automatically download the new agent, wait for their active jobs to finish, and restart into the new version. If you prefer to update nodes manually, turn off **Settings → Update agents automatically**.
 
-## Updates
+### Webhook alerts
+Under **Settings → Alerts**, you can add a Discord, Slack, or custom webhook URL to get notified when:
+- A node goes offline for 2+ minutes (and when it reconnects)
+- A lane repeatedly crashes or errors for 10+ minutes (and when it recovers)
+- Pirate Face refuses a submission or a job fails
+- An agent runs into a setup or update problem
 
-Each dashboard image ships the agent built from the same commit. When a node
-connects with an older agent, the dashboard sends it the new binary over the
-agent's WebSocket. The agent checks its size and SHA-256, runs it once to make
-sure it starts, swaps it over its own file, lets every lane **finish its current
-job**, and re-execs into it (same PID, so systemd and `nohup` setups both carry on).
-Nothing is downloaded from anywhere else and no work is lost.
+### Logs, events, and stats
+- **Live output & event log:** Each node page shows the last 1,000 lines of output per lane alongside an event log covering connection drops, agent updates, worker crashes, and lease waits.
+- **Job history & points:** The dashboard tracks throughput and records every leased model (`listed`, `already listed`, `refused`, `error`, or `aborted`). It also estimates points earned (1 point per 10 GB verified), though [pirateface.co](https://pirateface.co) is always the source of truth.
+- **Retention:** Logs, events, and job history are stored in SQLite so they survive dashboard restarts. By default, history is kept for 180 days (configurable under **Settings → History**).
 
-- **Settings → Update agents automatically** turns this off (it is on by default).
-  The node page then offers an **Update agent** button instead.
-- A node is offered an update at most every 30 minutes, so a failed install
-  (for example, a read-only binary directory) does not loop.
-- Running the install command again on a node that already runs the agent does not
-  kill it: the new binary is put in place and the agent gets `SIGHUP`, which
-  restarts it into the new binary after its lanes finish their current jobs.
-- To keep the dashboard itself current, run `docker compose pull && docker compose up -d`
-  from cron or a systemd timer, or pin `PF_FLEET_TAG` to a minor line such as `0.2`.
+---
 
-## Releases
+## Configuration reference
 
-`ghcr.io/0xgingi/pf-fleet` tags:
+All settings live in `.env` alongside `docker-compose.yml`:
 
-| Tag | What |
-|---|---|
-| `latest`, `0.2`, `0.2.1` | Releases (`v*` git tags). |
-| `edge` | Every push to `main` (version `<next>-edge.<run>`, so edge agents update in order). |
+| Variable | Default | Description |
+|---|---|---|
+| `PUBLIC_URL` | *(required)* | Externally reachable URL of the dashboard (used in node install commands). |
+| `ADMIN_USER` | `admin` | Username for the dashboard login. |
+| `ADMIN_PASSWORD` | *(required)* | Plain-text password (hashed at startup). Alternatively, set `ADMIN_PASSWORD_HASH`. |
+| `APP_SECRET` | *(required)* | Secret key used to encrypt Pirate Face tokens at rest (`openssl rand -hex 32`). |
+| `PF_FLEET_PORT` | `1337` | Host port exposed by Docker Compose. |
+| `TRUST_PROXY` | `0` | Set to `1` when running behind a reverse proxy so login rate-limiting sees real client IPs. |
+| `PF_FLEET_TAG` | `latest` | Docker image tag: `latest` (newest release), `0.1` (pin a minor release line), or `edge` (latest commit on `main`). |
 
-Every release also attaches the static agents (`pf-fleet-agent-x86_64`,
-`pf-fleet-agent-aarch64`) and `SHA256SUMS` to its GitHub release.
+### Compatibility notes
+- **Supported worker platforms:** Linux `x86_64` and `aarch64`.
+- **Shared hosts & seedboxes:** The agent automatically caps worker thread pools (`RAYON_NUM_THREADS=2`, etc.) so `uv` and `pf` don't hit per-user thread limits on shared seedboxes.
 
-To cut a release: set `version` in `agent/Cargo.toml` (the single version for the
-agent and the dashboard), commit, then `git tag v0.2.0 && git push origin v0.2.0`.
-The release workflow refuses a tag that does not match `Cargo.toml`, runs the full
-CI, and publishes the binaries and the multi-arch image.
-
-## Stats
-
-- **Throughput**: bytes verified per second per node (from each agent's counter),
-  kept per minute in SQLite.
-- **Jobs**: every leased model with its outcome: `listed`, `already listed`,
-  `refused` (Pirate Face said no, with the reason), `error`, or `aborted` (the
-  worker stopped or the agent restarted mid-job).
-- **Points (estimate)**: Pirate Face gives queue work 1 point per 10 GB verified.
-  The dashboard estimates this from listed jobs; the site's number is the real one.
-
-Worker output is kept in dashboard memory (last 1000 lines per lane) and in the
-node's journal (`journalctl --user -u pf-fleet-agent -f`).
-
-## Layout
-
-```
-agent/                 Rust agent (tokio current-thread, rustls/ring, static musl)
-apps/server/           Bun + Hono API, WebSocket hub, SQLite via Drizzle
-apps/web/              React + Vite + Tailwind + TanStack Query + Recharts
-packages/protocol/     zod schemas for agent⇄dashboard and the REST/SSE shapes
-protocol/fixtures/     sample messages both the TS and Rust tests must round-trip
-docs/protocol.md       the wire protocol
-```
+---
 
 ## Development
 
+### Repository layout
+
+```text
+agent/                 Rust node agent (static musl binary)
+apps/server/           Bun + Hono API, WebSocket hub, SQLite (Drizzle ORM)
+apps/web/              React + Vite + Tailwind web dashboard
+packages/protocol/     Shared Zod schemas for agent/dashboard messages and REST/SSE
+protocol/fixtures/     Sample messages verified by both TypeScript and Rust tests
+docs/protocol.md       Wire protocol specification
+```
+
+### Running locally
+
 ```sh
 bun install
-cp .env.example apps/server/.env   # PUBLIC_URL=http://localhost:1337, a password, an APP_SECRET
-bun run dev                        # API on :1337, UI on :5173 (proxied)
-bun test packages apps/server      # protocol fixtures, lane rules, API flow
+cp .env.example apps/server/.env   # set PUBLIC_URL=http://localhost:1337, ADMIN_PASSWORD, and APP_SECRET
+bun run dev                        # starts API on :1337 and Vite UI on :5173
+```
+
+Run the server and protocol tests:
+
+```sh
+bun test packages apps/server
 bun run typecheck
 ```
 
-Agent (no local Rust needed):
+Run the Rust agent tests (using Docker if you don't have a local Rust toolchain):
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src/agent rust:1.98-alpine3.22 \
   sh -c 'apk add gcc musl-dev && cargo test'
 ```
 
-For a local agent build to install from a dev dashboard, put binaries named
-`pf-fleet-agent-x86_64` / `pf-fleet-agent-aarch64` and a `VERSION` file in
-`apps/server/agent-dist/` (the Docker image does this for you).
-
-Schema changes: edit `apps/server/src/db/schema.ts`, then
-`cd apps/server && bunx drizzle-kit generate`. Migrations run at startup.
-
-## Notes and limits
-
-- Agents are Linux only (x86_64, aarch64). Workers need uv; the installer adds it.
-- The agent caps uv/pf thread pools (`RAYON_NUM_THREADS=2` and friends) because
-  shared hosts such as seedboxes often limit threads per user.
-- Stopping a worker mid-job loses that job's progress: pf streams models through
-  memory and cannot resume. Pirate Face also keeps the lease for up to 10 minutes,
-  and the lane waits for it to lapse before taking new work. Prefer *stop after
-  this job*.
-- One admin login. Sessions last `SESSION_DAYS` (default 30).
+- **Local Docker build:** Run `docker compose up -d --build` from a git clone to build the full image (including static `x86_64` and `aarch64` agents) locally.
+- **Database migrations:** Edit `apps/server/src/db/schema.ts`, then run `cd apps/server && bunx drizzle-kit generate`. Migrations run automatically on startup.
+- **Cutting a release:** Bump `version` in `agent/Cargo.toml`, commit, and push a matching tag (`git tag v0.2.0 && git push origin v0.2.0`). CI builds and publishes the multi-arch image and agent binaries.
